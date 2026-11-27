@@ -17,7 +17,7 @@ import java.util.Objects;
 public record Transfer(List<Copy> copies, Commit commit, OnError onError, int batch) {
 
   /** How many rows a run reads and writes at a time unless told otherwise. */
-  public static final int BATCH = 1000;
+  public static final int DEFAULT_BATCH = 1000;
 
   /**
    * @throws IllegalArgumentException if a batch is of fewer than one row, or a table is copied

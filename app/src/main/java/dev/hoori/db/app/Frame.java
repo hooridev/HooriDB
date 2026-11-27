@@ -222,7 +222,7 @@ final class Frame {
           case TableTab x -> x.view(s, app);
           case ConsoleTab x -> x.view(s, app);
           case MonitorTab x -> x.view(s, app);
-          case TransferTab x -> x.view(s, app);
+          case TransferTab x -> x.view(s);
         });
   }
 
@@ -641,23 +641,28 @@ final class Frame {
         case TransferTab _ -> copies++;
       }
     }
-    int n = consoles + tables + copies;
-    String text;
-    if (n == consoles) {
-      text =
-          consoles + (consoles == 1 ? " console may" : " consoles may") + " hold uncommitted work";
-    } else if (n == tables) {
-      text = tables + (tables == 1 ? " table has" : " tables have") + " uncommitted changes";
-    } else if (n == copies) {
-      text = copies == 1 ? "A copy of tables runs" : copies + " copies of tables run";
-    } else {
-      text = n + " tabs may hold uncommitted work";
-    }
+    var text = uncommitted(consoles, tables, copies);
     var first = tabs.getFirst();
     boolean asking = modal || asks(s, s.tabs.groupOf((Tab) first));
     return StatusBar.item(
             Badge.Kind.WARNING, Symbol.LOCK_OPEN, text, asking ? null : () -> first.show(s))
         .key("uncommitted");
+  }
+
+  // What the tabs at stake hold, by their kinds.
+  private static String uncommitted(int consoles, int tables, int copies) {
+    int n = consoles + tables + copies;
+    if (n == consoles) {
+      return consoles + (consoles == 1 ? " console may" : " consoles may")
+          + " hold uncommitted work";
+    }
+    if (n == tables) {
+      return tables + (tables == 1 ? " table has" : " tables have") + " uncommitted changes";
+    }
+    if (n == copies) {
+      return copies == 1 ? "A copy of tables runs" : copies + " copies of tables run";
+    }
+    return n + " tabs may hold uncommitted work";
   }
 
   /** The version that runs, its authors, license and website. */

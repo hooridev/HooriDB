@@ -407,8 +407,16 @@ class TransferTabTest {
   void exitWhileACopyRunsAsksFirst() throws Exception {
     var app = opened(MARIA);
     var held = running(app);
-    var exit = "press role=menuitem label=\"File\"\nframe\nadvance 1\nframe\n"
-        + "press role=menuitem label=\"Exit\"\nframe\nadvance 1\nframe\n";
+    var exit = """
+        press role=menuitem label="File"
+        frame
+        advance 1
+        frame
+        press role=menuitem label="Exit"
+        frame
+        advance 1
+        frame
+        """;
     c.run(app, exit + "snap asked\n");
     assertTrue(c.tree("asked").contains("Stop the copy?"), c.tree("asked"));
     c.run(app, "press #answer-cancel\nframe\nadvance 1\nframe\n");

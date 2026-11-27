@@ -1978,7 +1978,7 @@ final class FakeServers implements Servers {
           made.provider(),
           Purpose.TRANSFER,
           key,
-          done -> Outcome.DONE,
+          _ -> Outcome.DONE,
           () -> table(key, t, writes, call));
     }
 
@@ -1994,7 +1994,9 @@ final class FakeServers implements Servers {
         }
 
         @Override
-        public void prepare() {}
+        public void prepare() {
+          // Nothing to set up or end in the fake.
+        }
 
         @Override
         public List<Column> columns(Table table) throws CatalogException {
@@ -2042,7 +2044,9 @@ final class FakeServers implements Servers {
             }
 
             @Override
-            public void close() {}
+            public void close() {
+              // Nothing to set up or end in the fake.
+            }
           };
         }
       };
@@ -2062,7 +2066,9 @@ final class FakeServers implements Servers {
         }
 
         @Override
-        public void prepare() {}
+        public void prepare() {
+          // Nothing to set up or end in the fake.
+        }
 
         @Override
         public String identity() {
@@ -2134,13 +2140,21 @@ final class FakeServers implements Servers {
         }
 
         @Override
-        public void written(Table table, List<String> columns) {}
+        public void written(Table table, List<String> columns) {
+          // Nothing to set up or end in the fake.
+        }
 
         @Override
-        public void commit() throws Exception {
+        public void commit() throws QueryException {
           var key = "copy commit " + host;
           note(key);
-          call(key, queryFailure(QueryException.Failure.CANCELLED));
+          try {
+            call(key, queryFailure(QueryException.Failure.CANCELLED));
+          } catch (QueryException e) {
+            throw e;
+          } catch (Exception _) {
+            throw queryFailure(QueryException.Failure.OTHER);
+          }
           uncommitted.forEach(Runnable::run);
           uncommitted.clear();
         }

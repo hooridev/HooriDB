@@ -510,9 +510,10 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     @Override
     public Carry carry(Column column) {
       var base = base(column);
-      return NUMBERS.contains(base)
-          ? Carry.NUMBER
-          : BYTES.contains(base) ? Carry.BYTES : Carry.TEXT;
+      if (NUMBERS.contains(base)) {
+        return Carry.NUMBER;
+      }
+      return BYTES.contains(base) ? Carry.BYTES : Carry.TEXT;
     }
 
     // As the server writes them: the drivers' conversions of a date or a number, a tinyint(1)
@@ -573,10 +574,11 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       return "INSERT INTO " + table + " (" + String.join(", ", columns) + ") VALUES";
     }
 
-    // Their auto-increments move past the values written by themselves.
     @Override
     public void written(
-        Connection connection, Provider provider, Table table, List<String> columns) {}
+        Connection connection, Provider provider, Table table, List<String> columns) {
+      // Nothing to do: their auto-increments move past the values written by themselves.
+    }
   }
 
   // What their drivers do alike.

@@ -38,7 +38,7 @@ class CopierTest {
   private final Map<String, List<List<Object>>> sourceRows = new HashMap<>();
   private final Map<String, List<List<Object>>> targetRows = new HashMap<>();
   private final List<Pending> pending = new ArrayList<>();
-  private final Map<String, Exception> failing = new HashMap<>();
+  private final Map<String, QueryException> failing = new HashMap<>();
   private final List<ForeignKey> keys = new ArrayList<>();
   // The names of a table's columns on each end, by its name, where they are not just v.
   private final Map<String, List<String>> sourceColumns = new HashMap<>();
@@ -393,7 +393,7 @@ class CopierTest {
         .toList();
   }
 
-  private void fail(String call) throws Exception {
+  private void fail(String call) throws QueryException {
     var failure = failing.get(call);
     if (failure != null) {
       throw failure;
@@ -436,7 +436,7 @@ class CopierTest {
           private int at;
 
           @Override
-          public Batch next(int count, long budget) throws Exception {
+          public Batch next(int count, long budget) throws QueryException, InterruptedException {
             calls.add("next " + name + " " + count + " " + budget);
             if (holding != null && at > 0) {
               held.countDown();
@@ -525,7 +525,7 @@ class CopierTest {
 
       @Override
       public long write(Table table, List<String> columns, List<List<Object>> rows)
-          throws Exception {
+          throws QueryException {
         writes++;
         calls.add("write " + table.name());
         fail("write " + table.name());
@@ -553,7 +553,7 @@ class CopierTest {
       }
 
       @Override
-      public void rollback() throws Exception {
+      public void rollback() throws QueryException {
         calls.add("rollback");
         fail("rollback");
         pending.clear();

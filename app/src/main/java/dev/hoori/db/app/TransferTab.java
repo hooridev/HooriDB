@@ -8,7 +8,6 @@ import static com.rethinkj.ui.kit.Button.Variant.SECONDARY;
 import static com.rethinkj.ui.kit.Button.button;
 import static com.rethinkj.ui.kit.Label.label;
 
-import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Style;
 import com.rethinkj.ui.Work;
@@ -25,6 +24,7 @@ import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Segmented;
 import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
@@ -35,6 +35,7 @@ import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
+import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.transfer.Batch;
 import dev.hoori.db.core.transfer.Copier;
 import dev.hoori.db.core.transfer.Report;
@@ -69,10 +70,10 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 final class TransferTab implements Tab, Guard.Guarded {
 
-  static final String COPY = "Copy";
+  static final String COPY_LABEL = "Copy";
 
   /** What the tables of the target are given where they have rows, in the order offered. */
-  static final List<Existing> EXISTING = List.of(Existing.values());
+  static final List<Existing> EXISTING_CHOICES = List.of(Existing.values());
 
   /** What the batches of the run are committed by, in the order offered. */
   static final List<Commit> COMMITS = List.of(Commit.values());
@@ -158,7 +159,7 @@ final class TransferTab implements Tab, Guard.Guarded {
   final Menu.State allMenu = new Menu.State();
   Commit commit = Commit.TABLE;
   OnError onError = OnError.STOP;
-  int batch = Transfer.BATCH;
+  int batch = Transfer.DEFAULT_BATCH;
   Work running; // the copy under way, or null
   private AtomicReference<Report> last = new AtomicReference<>(); // as the copy last told it
   Report report; // how far the copy is, or how the last ended; null before one
@@ -326,14 +327,10 @@ final class TransferTab implements Tab, Guard.Guarded {
   // What the end holds: the database taken is the one chosen, else the session's own, else the
   // one there is; the schema is the one chosen, else public, else the first.
   private static Listing list(Servers.Link link, Provider provider, String database, String schema)
-      throws Exception {
+      throws CatalogException {
     var databases =
         link.databases().stream().filter(d -> !d.system()).map(Database::name).toList();
-    var db = !database.isEmpty()
-        ? database
-        : link.database() != null
-            ? link.database()
-            : databases.size() == 1 ? databases.getFirst() : "";
+    var db = chosen(database, link.database(), databases);
     if (db.isEmpty()) {
       return new Listing(databases, "", List.of(), "", null);
     }
@@ -344,9 +341,7 @@ final class TransferTab implements Tab, Guard.Guarded {
     if (provider.supports(Capability.SCHEMAS, ServerVersion.UNKNOWN)) {
       schemas =
           link.schemas(of).stream().filter(x -> !x.system()).map(Schema::name).toList();
-      taken = schemas.contains(schema)
-          ? schema
-          : schemas.contains("public") ? "public" : schemas.isEmpty() ? "" : schemas.getFirst();
+      taken = schemaOf(schema, schemas);
       if (taken.isEmpty()) {
         return new Listing(databases, db, schemas, "", List.of());
       }
@@ -356,6 +351,29 @@ final class TransferTab implements Tab, Guard.Guarded {
         .filter(t -> t.kind() == Table.Kind.TABLE)
         .toList();
     return new Listing(databases, db, schemas, taken, tables);
+  }
+
+  // The name chosen where it is not empty, else the one given where there is one, else the only one
+  // of the names, else none.
+  private static String chosen(String name, String given, List<String> names) {
+    if (!name.isEmpty()) {
+      return name;
+    }
+    if (given != null) {
+      return given;
+    }
+    return names.size() == 1 ? names.getFirst() : "";
+  }
+
+  // The schema chosen where the database has it, else public, else its first, else none.
+  private static String schemaOf(String schema, List<String> schemas) {
+    if (schemas.contains(schema)) {
+      return schema;
+    }
+    if (schemas.contains("public")) {
+      return "public";
+    }
+    return schemas.isEmpty() ? "" : schemas.getFirst();
   }
 
   private static Set<String> names(List<Table> tables) {
@@ -445,20 +463,12 @@ final class TransferTab implements Tab, Guard.Guarded {
   /** Why the copy cannot run now, in words for the user; null where it can. */
   String blocked(State s) {
     for (var end : List.of(source, target)) {
-      if (end.problem != null) {
-        return end.role + ": " + end.problem;
+      if (end.problem == null && (end.lane == null || end.tables == null) && end.reading != null) {
+        return null; // the view says that it reads
       }
-      if (end.lane == null || end.tables == null) {
-        return end.reading != null
-            ? null // the view says that it reads
-            : end.role + ": choose its database" + (end.schemas == null ? "." : " and schema.");
-      }
-      var provider = provider(s, end);
-      if (provider != null && end.container(provider) == null) {
-        return end.role + ": choose its "
-            + (provider.supports(Capability.SCHEMAS, ServerVersion.UNKNOWN)
-                ? "schema."
-                : "database.");
+      var why = blocked(s, end);
+      if (why != null) {
+        return why;
       }
     }
     var profile = s.profile(target.id);
@@ -473,6 +483,22 @@ final class TransferTab implements Tab, Guard.Guarded {
       return "Check the tables to copy.";
     }
     return null;
+  }
+
+  // What of the end stands in the way of a copy, or null.
+  private String blocked(State s, End end) {
+    if (end.problem != null) {
+      return end.role + ": " + end.problem;
+    }
+    if (end.lane == null || end.tables == null) {
+      return end.role + ": choose its database" + (end.schemas == null ? "." : " and schema.");
+    }
+    var provider = provider(s, end);
+    if (provider == null || end.container(provider) != null) {
+      return null;
+    }
+    var part = provider.supports(Capability.SCHEMAS, ServerVersion.UNKNOWN) ? "schema" : "database";
+    return end.role + ": choose its " + part + ".";
   }
 
   // The run
@@ -612,6 +638,19 @@ final class TransferTab implements Tab, Guard.Guarded {
     }
   }
 
+  // The call on the lane, waited for, failing as it failed; a lane that failed as it opened fails
+  // as a lost connection, which a call before would have found.
+  private static <T> T on(Lane lane, Lane.Call<T> call)
+      throws QueryException, CatalogException, InterruptedException {
+    try {
+      return lane.call(call);
+    } catch (QueryException | CatalogException | InterruptedException | RuntimeException e) {
+      throw e;
+    } catch (Exception e) {
+      throw QueryException.of(QueryException.Failure.CONNECTION_LOST, e.getMessage());
+    }
+  }
+
   // The source's calls, each on its lane, waited for: an interrupt cancels the one that runs.
   private static Source source(Lane lane, Provider provider) {
     return new Source() {
@@ -621,40 +660,43 @@ final class TransferTab implements Tab, Guard.Guarded {
       }
 
       @Override
-      public void prepare() throws Exception {
-        lane.call(link -> {
+      public void prepare() throws QueryException, CatalogException, InterruptedException {
+        on(lane, link -> {
           link.source().prepare();
           return null;
         });
       }
 
       @Override
-      public List<Column> columns(Table table) throws Exception {
-        return lane.call(link -> link.source().columns(table));
+      public List<Column> columns(Table table)
+          throws QueryException, CatalogException, InterruptedException {
+        return on(lane, link -> link.source().columns(table));
       }
 
       @Override
-      public long count(Table table) throws Exception {
-        return lane.call(link -> link.source().count(table));
+      public long count(Table table) throws QueryException, CatalogException, InterruptedException {
+        return on(lane, link -> link.source().count(table));
       }
 
       @Override
-      public String identity() throws Exception {
-        return lane.call(link -> link.source().identity());
+      public String identity() throws QueryException, CatalogException, InterruptedException {
+        return on(lane, link -> link.source().identity());
       }
 
       @Override
-      public Reading read(Selection selection) throws Exception {
-        var reading = lane.call(link -> link.source().read(selection));
+      public Reading read(Selection selection)
+          throws QueryException, CatalogException, InterruptedException {
+        var reading = on(lane, link -> link.source().read(selection));
         return new Reading() {
           @Override
-          public Batch next(int count, long budget) throws Exception {
-            return lane.call(link -> reading.next(count, budget));
+          public Batch next(int count, long budget)
+              throws QueryException, CatalogException, InterruptedException {
+            return on(lane, link -> reading.next(count, budget));
           }
 
           @Override
-          public void close() throws Exception {
-            lane.call(link -> {
+          public void close() throws QueryException, CatalogException, InterruptedException {
+            on(lane, link -> {
               reading.close();
               return null;
             });
@@ -678,7 +720,7 @@ final class TransferTab implements Tab, Guard.Guarded {
       public boolean readOnly() {
         if (readOnly == null) {
           try {
-            readOnly = lane.call(link -> link.target().readOnly());
+            readOnly = on(lane, link -> link.target().readOnly());
           } catch (Exception e) {
             return false; // the next call says why the session cannot be used
           }
@@ -687,84 +729,89 @@ final class TransferTab implements Tab, Guard.Guarded {
       }
 
       @Override
-      public void prepare() throws Exception {
-        lane.call(link -> {
+      public void prepare() throws QueryException, CatalogException, InterruptedException {
+        on(lane, link -> {
           link.target().prepare();
           return null;
         });
       }
 
       @Override
-      public String identity() throws Exception {
-        return lane.call(link -> link.target().identity());
+      public String identity() throws QueryException, CatalogException, InterruptedException {
+        return on(lane, link -> link.target().identity());
       }
 
       @Override
-      public OptionalLong statementLimit() throws Exception {
-        return lane.call(link -> link.target().statementLimit());
+      public OptionalLong statementLimit()
+          throws QueryException, CatalogException, InterruptedException {
+        return on(lane, link -> link.target().statementLimit());
       }
 
       @Override
-      public Shape shape(Table table) throws Exception {
-        return lane.call(link -> link.target().shape(table));
+      public Shape shape(Table table)
+          throws QueryException, CatalogException, InterruptedException {
+        return on(lane, link -> link.target().shape(table));
       }
 
       @Override
-      public List<ForeignKey> foreignKeys(Table table) throws Exception {
-        return lane.call(link -> link.target().foreignKeys(table));
+      public List<ForeignKey> foreignKeys(Table table)
+          throws QueryException, CatalogException, InterruptedException {
+        return on(lane, link -> link.target().foreignKeys(table));
       }
 
       @Override
-      public boolean hasRows(Table table) throws Exception {
-        return lane.call(link -> link.target().hasRows(table));
+      public boolean hasRows(Table table)
+          throws QueryException, CatalogException, InterruptedException {
+        return on(lane, link -> link.target().hasRows(table));
       }
 
       @Override
-      public void begin() throws Exception {
-        lane.call(link -> {
+      public void begin() throws QueryException, CatalogException, InterruptedException {
+        on(lane, link -> {
           link.target().begin();
           return null;
         });
       }
 
       @Override
-      public long empty(Table table) throws Exception {
-        return lane.call(link -> link.target().empty(table));
+      public long empty(Table table) throws QueryException, CatalogException, InterruptedException {
+        return on(lane, link -> link.target().empty(table));
       }
 
       @Override
       public long write(Table table, List<String> columns, List<List<Object>> rows)
-          throws Exception {
-        return lane.call(link -> link.target().write(table, columns, rows));
+          throws QueryException, CatalogException, InterruptedException {
+        return on(lane, link -> link.target().write(table, columns, rows));
       }
 
       @Override
-      public void written(Table table, List<String> columns) throws Exception {
-        lane.call(link -> {
+      public void written(Table table, List<String> columns)
+          throws QueryException, CatalogException, InterruptedException {
+        on(lane, link -> {
           link.target().written(table, columns);
           return null;
         });
       }
 
       @Override
-      public void commit() throws Exception {
-        lane.call(link -> {
+      public void commit() throws QueryException, CatalogException, InterruptedException {
+        on(lane, link -> {
           link.target().commit();
           return null;
         });
       }
 
       @Override
-      public void rollback() throws Exception {
-        lane.call(link -> {
+      public void rollback() throws QueryException, CatalogException, InterruptedException {
+        on(lane, link -> {
           link.target().rollback();
           return null;
         });
       }
 
       @Override
-      public void end() throws Exception {
-        lane.call(link -> {
+      public void end() throws QueryException, CatalogException, InterruptedException {
+        on(lane, link -> {
           link.target().end();
           return null;
         });
@@ -775,18 +822,18 @@ final class TransferTab implements Tab, Guard.Guarded {
   // The view
 
   /** The tab's content: the two ends, the tables, the options, and how far a copy is. */
-  El view(State s, App<State> app) {
+  El view(State s) {
     Theme t = Theme.CURRENT.get();
     var runs = running != null;
     var blocked = blocked(s);
     var copy = button(
             PRIMARY,
-            runs ? "Copying" : COPY,
+            runs ? "Copying" : COPY_LABEL,
             runs || blocked != null || source.reading != null || target.reading != null
                 ? null
                 : () -> copy(s))
         .key("transfer-copy")
-        .label(COPY);
+        .label(COPY_LABEL);
     var cancel = button(
             SECONDARY,
             cancelling ? "Cancelling" : "Cancel",
@@ -811,7 +858,7 @@ final class TransferTab implements Tab, Guard.Guarded {
             .gap(t.space().l())
             .child(endView(s, source).grow(1))
             .child(endView(s, target).grow(1)))
-        .child(tablesView(s))
+        .child(tablesView())
         .child(optionsView())
         .child(actions)
         .child(statusView());
@@ -847,35 +894,9 @@ final class TransferTab implements Tab, Guard.Guarded {
         .label(role + " connection");
     var fields = new ArrayList<Form.Entry>();
     fields.add(Form.field("Connection", connection));
-    var databases = new ArrayList<String>();
-    if (end.databases != null) {
-      databases.addAll(end.databases);
-    }
-    if (!end.database.isEmpty() && !databases.contains(end.database)) {
-      databases.addFirst(end.database);
-    }
-    fields.add(Form.field(
-        "Database",
-        Select.select(
-                databases,
-                end.database.isEmpty() ? null : end.database,
-                n -> n,
-                end.databaseMenu,
-                runs ? null : n -> chooseDatabase(s, end, n))
-            .key(lower + "-database")
-            .label(role + " database")));
+    fields.add(Form.field("Database", databaseSelect(s, end, runs)));
     if (provider != null && provider.supports(Capability.SCHEMAS, ServerVersion.UNKNOWN)) {
-      var schemas = end.schemas == null ? List.<String>of() : end.schemas;
-      fields.add(Form.field(
-          "Schema",
-          Select.select(
-                  schemas,
-                  end.schema.isEmpty() ? null : end.schema,
-                  n -> n,
-                  end.schemaMenu,
-                  runs ? null : n -> chooseSchema(s, end, n))
-              .key(lower + "-schema")
-              .label(role + " schema")));
+      fields.add(Form.field("Schema", schemaSelect(s, end, runs)));
     }
     var card = col()
         .gap(t.space().s())
@@ -885,25 +906,94 @@ final class TransferTab implements Tab, Guard.Guarded {
       card.child(Progress.spinner().label("Reading " + lower + " tables"));
     }
     if (end.problem != null) {
-      var profile = end.id == null ? null : s.profile(end.id);
-      card.child(Callout.callout(
-              Callout.Kind.WARNING,
-              role + " not read",
-              end.problem,
-              profile == null || s.catalog.connected(end.id)
-                  ? new El[] {}
-                  : new El[] {
-                    button(SECONDARY, "Connect", () -> s.catalog.connect(s, end.id))
-                        .label("Connect " + State.name(profile))
-                  })
-          .key(lower + "-problem"));
+      card.child(problem(s, end).key(lower + "-problem"));
     }
     return Card.card(card).key(lower);
   }
 
+  // The end's databases, with the one chosen where the list lacks it.
+  private El databaseSelect(State s, End end, boolean runs) {
+    var databases = new ArrayList<String>();
+    if (end.databases != null) {
+      databases.addAll(end.databases);
+    }
+    if (!end.database.isEmpty() && !databases.contains(end.database)) {
+      databases.addFirst(end.database);
+    }
+    var lower = end.role.toLowerCase(java.util.Locale.ROOT);
+    return Select.select(
+            databases,
+            end.database.isEmpty() ? null : end.database,
+            n -> n,
+            end.databaseMenu,
+            runs ? null : n -> chooseDatabase(s, end, n))
+        .key(lower + "-database")
+        .label(end.role + " database");
+  }
+
+  private El schemaSelect(State s, End end, boolean runs) {
+    var lower = end.role.toLowerCase(java.util.Locale.ROOT);
+    return Select.select(
+            end.schemas == null ? List.<String>of() : end.schemas,
+            end.schema.isEmpty() ? null : end.schema,
+            n -> n,
+            end.schemaMenu,
+            runs ? null : n -> chooseSchema(s, end, n))
+        .key(lower + "-schema")
+        .label(end.role + " schema");
+  }
+
+  // Why the end was not read, with Connect where its connection is not connected.
+  private static El problem(State s, End end) {
+    var profile = end.id == null ? null : s.profile(end.id);
+    var actions = profile == null || s.catalog.connected(end.id)
+        ? new El[] {}
+        : new El[] {
+          button(SECONDARY, "Connect", () -> s.catalog.connect(s, end.id))
+              .label("Connect " + State.name(profile))
+        };
+    return Callout.callout(Callout.Kind.WARNING, end.role + " not read", end.problem, actions);
+  }
+
+  // A table of the source, to check, with whether the target has it or how far its copy is, and
+  // what is done where it has rows.
+  private El tableLine(int i, String name, Report.Entry entry, Set<String> there) {
+    Theme t = Theme.CURRENT.get();
+    var runs = running != null;
+    var key = "table-" + i;
+    var box = Checkbox.checkbox(!unchecked.contains(name), name, runs ? null : () -> toggle(name))
+        .grow(1);
+    var line = row()
+        .key(key)
+        .role("listitem")
+        .label(name)
+        .wFull()
+        .h(t.size().control())
+        .gap(t.space().m())
+        .align(Style.Align.CENTER)
+        .padding(0, t.space().m())
+        .child(box);
+    if (entry != null) {
+      line.child(label(Label.Variant.MUTED, state(entry)).key(key + "-state"));
+    } else if (target.tables != null) {
+      line.child(
+          label(Label.Variant.MUTED, there.contains(name) ? "In the target" : "Not in the target")
+              .key(key + "-target"));
+    }
+    return line.child(Select.select(
+            EXISTING_CHOICES,
+            existing(name),
+            TransferTab::title,
+            existingMenus.computeIfAbsent(name, n -> new Menu.State()),
+            runs ? null : v -> existing.put(name, v))
+        .key(key + "-existing")
+        .label("Where " + name + " has rows")
+        .w(9 * t.size().control()));
+  }
+
   // The source's tables, each to check, with whether the target has it and what is done where it
   // has rows, and, once a copy ran, how far it is.
-  private El tablesView(State s) {
+  private El tablesView() {
     Theme t = Theme.CURRENT.get();
     var runs = running != null;
     var list = col().key("transfer-tables").role("list").label("Tables").wFull();
@@ -921,37 +1011,7 @@ final class TransferTab implements Tab, Guard.Guarded {
     }
     var tables = source.tables == null ? List.<Table>of() : source.tables;
     for (var i = 0; i < tables.size(); i++) {
-      var name = tables.get(i).name();
-      var box = Checkbox.checkbox(!unchecked.contains(name), name, runs ? null : () -> toggle(name))
-          .grow(1);
-      var line = row()
-          .key("table-" + i)
-          .role("listitem")
-          .label(name)
-          .wFull()
-          .h(t.size().control())
-          .gap(t.space().m())
-          .align(Style.Align.CENTER)
-          .padding(0, t.space().m())
-          .child(box);
-      var entry = entries.get(name);
-      if (entry != null) {
-        line.child(label(Label.Variant.MUTED, state(entry)).key("table-" + i + "-state"));
-      } else if (target.tables != null) {
-        line.child(
-            label(Label.Variant.MUTED, there.contains(name) ? "In the target" : "Not in the target")
-                .key("table-" + i + "-target"));
-      }
-      line.child(Select.select(
-              EXISTING,
-              existing(name),
-              TransferTab::title,
-              existingMenus.computeIfAbsent(name, n -> new Menu.State()),
-              runs ? null : v -> existing.put(name, v))
-          .key("table-" + i + "-existing")
-          .label("Where " + name + " has rows")
-          .w(9 * t.size().control()));
-      list.child(line);
+      list.child(tableLine(i, tables.get(i).name(), entries.get(tables.get(i).name()), there));
     }
     var header = row()
         .wFull()
@@ -963,7 +1023,7 @@ final class TransferTab implements Tab, Guard.Guarded {
             .label("Check no table"))
         .child(label(Label.Variant.MUTED, "Where the target has rows"))
         .child(Select.select(
-                EXISTING,
+                EXISTING_CHOICES,
                 tables.stream().map(table -> existing(table.name())).distinct().count() == 1
                     ? existing(tables.getFirst().name())
                     : null,

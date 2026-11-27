@@ -330,6 +330,18 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
       };
     }
 
+    // A call of a copy's session, recorded, failing as the session's calls fail.
+    private <T> T copying(String database, Journal.Call<T, Exception> call)
+        throws QueryException, CatalogException, InterruptedException {
+      try {
+        return recorded(database, call);
+      } catch (QueryException | CatalogException | InterruptedException | RuntimeException e) {
+        throw e;
+      } catch (Exception e) {
+        throw new IllegalStateException("A copy's session failed as none of its calls fail", e);
+      }
+    }
+
     // What a copy reads, logged about the database of the table it reads.
     @Override
     public Source source() throws QueryException {
@@ -341,41 +353,45 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
         }
 
         @Override
-        public void prepare() throws Exception {
-          recorded(null, () -> {
+        public void prepare() throws QueryException, CatalogException, InterruptedException {
+          copying(null, () -> {
             source.prepare();
             return null;
           });
         }
 
         @Override
-        public List<Column> columns(Table table) throws Exception {
-          return recorded(of(table), () -> source.columns(table));
+        public List<Column> columns(Table table)
+            throws QueryException, CatalogException, InterruptedException {
+          return copying(of(table), () -> source.columns(table));
         }
 
         @Override
-        public long count(Table table) throws Exception {
-          return recorded(of(table), () -> source.count(table));
+        public long count(Table table)
+            throws QueryException, CatalogException, InterruptedException {
+          return copying(of(table), () -> source.count(table));
         }
 
         @Override
-        public String identity() throws Exception {
-          return recorded(null, source::identity);
+        public String identity() throws QueryException, CatalogException, InterruptedException {
+          return copying(null, source::identity);
         }
 
         @Override
-        public Reading read(Selection selection) throws Exception {
+        public Reading read(Selection selection)
+            throws QueryException, CatalogException, InterruptedException {
           var database = of(selection.table());
-          var reading = recorded(database, () -> source.read(selection));
+          var reading = copying(database, () -> source.read(selection));
           return new Reading() {
             @Override
-            public Batch next(int count, long budget) throws Exception {
-              return recorded(database, () -> reading.next(count, budget));
+            public Batch next(int count, long budget)
+                throws QueryException, CatalogException, InterruptedException {
+              return copying(database, () -> reading.next(count, budget));
             }
 
             @Override
-            public void close() throws Exception {
-              recorded(database, () -> {
+            public void close() throws QueryException, CatalogException, InterruptedException {
+              copying(database, () -> {
                 reading.close();
                 return null;
               });
@@ -401,84 +417,90 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
         }
 
         @Override
-        public void prepare() throws Exception {
-          recorded(null, () -> {
+        public void prepare() throws QueryException, CatalogException, InterruptedException {
+          copying(null, () -> {
             target.prepare();
             return null;
           });
         }
 
         @Override
-        public String identity() throws Exception {
-          return recorded(null, target::identity);
+        public String identity() throws QueryException, CatalogException, InterruptedException {
+          return copying(null, target::identity);
         }
 
         @Override
-        public OptionalLong statementLimit() throws Exception {
-          return recorded(null, target::statementLimit);
+        public OptionalLong statementLimit()
+            throws QueryException, CatalogException, InterruptedException {
+          return copying(null, target::statementLimit);
         }
 
         @Override
-        public Shape shape(Table table) throws Exception {
-          return recorded(of(table), () -> target.shape(table));
+        public Shape shape(Table table)
+            throws QueryException, CatalogException, InterruptedException {
+          return copying(of(table), () -> target.shape(table));
         }
 
         @Override
-        public List<ForeignKey> foreignKeys(Table table) throws Exception {
-          return recorded(of(table), () -> target.foreignKeys(table));
+        public List<ForeignKey> foreignKeys(Table table)
+            throws QueryException, CatalogException, InterruptedException {
+          return copying(of(table), () -> target.foreignKeys(table));
         }
 
         @Override
-        public boolean hasRows(Table table) throws Exception {
-          return recorded(of(table), () -> target.hasRows(table));
+        public boolean hasRows(Table table)
+            throws QueryException, CatalogException, InterruptedException {
+          return copying(of(table), () -> target.hasRows(table));
         }
 
         @Override
-        public void begin() throws Exception {
-          recorded(null, () -> {
+        public void begin() throws QueryException, CatalogException, InterruptedException {
+          copying(null, () -> {
             target.begin();
             return null;
           });
         }
 
         @Override
-        public long empty(Table table) throws Exception {
-          return recorded(of(table), () -> target.empty(table));
+        public long empty(Table table)
+            throws QueryException, CatalogException, InterruptedException {
+          return copying(of(table), () -> target.empty(table));
         }
 
         @Override
         public long write(Table table, List<String> columns, List<List<Object>> rows)
-            throws Exception {
-          return recorded(of(table), () -> target.write(table, columns, rows));
+            throws QueryException, CatalogException, InterruptedException {
+          return copying(of(table), () -> target.write(table, columns, rows));
         }
 
         @Override
-        public void written(Table table, List<String> columns) throws Exception {
-          recorded(of(table), () -> {
+        public void written(Table table, List<String> columns)
+            throws QueryException, CatalogException, InterruptedException {
+          copying(of(table), () -> {
             target.written(table, columns);
             return null;
           });
         }
 
         @Override
-        public void commit() throws Exception {
-          recorded(null, () -> {
+        public void commit() throws QueryException, CatalogException, InterruptedException {
+          copying(null, () -> {
             target.commit();
             return null;
           });
         }
 
         @Override
-        public void rollback() throws Exception {
-          recorded(null, () -> {
+        public void rollback() throws QueryException, CatalogException, InterruptedException {
+          copying(null, () -> {
             target.rollback();
             return null;
           });
         }
 
         @Override
-        public void end() throws Exception {
-          recorded(null, () -> {
+        public void end() throws QueryException, CatalogException, InterruptedException {
+          copying(null, () -> {
             target.end();
             return null;
           });

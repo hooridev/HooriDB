@@ -12,6 +12,7 @@ import java.io.Serial;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -71,7 +72,7 @@ public final class Copier {
   private List<Entry> tables;
   private Stage stage = Stage.PREPARING;
   private boolean same; // whether the source and the target are on the same server and database
-  private long budget = BUDGET;
+  private long batchBytes = BUDGET; // at most of a batch
 
   // What is read of a table, and the names of the columns of the target its values go into.
   private record Plan(Selection selection, List<String> columns) {}
@@ -110,33 +111,18 @@ public final class Copier {
     }
     tell();
     try {
-      try {
-        source.prepare();
-        target.prepare();
-        same = source.identity().equals(target.identity());
-        var limit = target.statementLimit();
-        if (limit.isPresent()) {
-          // Half, as a text and bytes may take twice what they are counted as on their way.
-          budget = Math.clamp(limit.getAsLong() / 2, 1, BUDGET);
-        }
-      } catch (Exception e) {
-        throw cancelled(e) ? new Cancel() : e;
-      }
+      ready();
       prepare();
       if (stopsAt(State.FAILED)) {
         return stop();
       }
       target.begin();
       stage = Stage.COPYING;
-      for (var i = 0; i < tables.size(); i++) {
-        if (tables.get(i).state() == State.WAITING
-            && !copy(i)
-            && transfer.onError() == Transfer.OnError.STOP) {
-          return stop();
-        }
+      if (!copyAll()) {
+        return stop();
       }
       stage = Stage.DONE;
-    } catch (Cancel e) {
+    } catch (Cancel _) {
       // Where the cancel came as an InterruptedException, which cleared it, the thread stays
       // interrupted all the same.
       Thread.currentThread().interrupt();
@@ -156,6 +142,35 @@ public final class Copier {
       quietly(target::end);
     }
     return tell();
+  }
+
+  // Puts both sessions in the state a copy needs, and learns whether they are on the same server
+  // and database, and how much a statement may carry to the target.
+  private void ready() throws Exception {
+    try {
+      source.prepare();
+      target.prepare();
+      same = source.identity().equals(target.identity());
+      var limit = target.statementLimit();
+      if (limit.isPresent()) {
+        // Half, as a text and bytes may take twice what they are counted as on their way.
+        batchBytes = Math.clamp(limit.getAsLong() / 2, 1, BUDGET);
+      }
+    } catch (Exception e) {
+      throw cancelled(e) ? new Cancel() : e;
+    }
+  }
+
+  // Copies the tables that wait, in their order; false where one failed and the run stops at it.
+  private boolean copyAll() throws Exception {
+    for (var i = 0; i < tables.size(); i++) {
+      if (tables.get(i).state() == State.WAITING
+          && !copy(i)
+          && transfer.onError() == Transfer.OnError.STOP) {
+        return false;
+      }
+    }
+    return true;
   }
 
   // Reads what each table needs, and orders them; a table that does not fit fails.
@@ -192,13 +207,8 @@ public final class Copier {
       return "The source and the target are the same table, which would be read as it is written.";
     }
     var from = source.columns(copy.from());
-    Target.Shape shape;
-    try {
-      shape = target.shape(copy.to());
-    } catch (CatalogException e) {
-      if (e.failure() != CatalogException.Failure.NOT_FOUND) {
-        throw e;
-      }
+    var shape = shape(copy.to());
+    if (shape == null) {
       return "The target has no table " + copy.to().name()
           + ": HooriDB does not create tables yet, so it must be created first.";
     }
@@ -214,9 +224,35 @@ public final class Copier {
         names.add(into.name());
       }
     }
+    var problem = columnsProblem(copy, chosen, names, lacking);
+    if (problem != null) {
+      return problem;
+    }
+    if (copy.existing() == Transfer.Existing.STOP && target.hasRows(copy.to())) {
+      return ofTarget(copy) + " has rows, which the run was to stop at.";
+    }
+    plans.put(copy, new Plan(Selection.of(copy.from(), chosen, from), names));
+    return null;
+  }
+
+  // The target's table, or null where it has none.
+  private Target.Shape shape(Table table) throws Exception {
+    try {
+      return target.shape(table);
+    } catch (CatalogException e) {
+      if (e.failure() != CatalogException.Failure.NOT_FOUND) {
+        throw e;
+      }
+      return null;
+    }
+  }
+
+  // Why the source's columns, chosen into the target's of the names, do not fit; null where they
+  // do.
+  private static String columnsProblem(
+      Transfer.Copy copy, List<Column> chosen, List<String> names, List<String> lacking) {
     if (!lacking.isEmpty()) {
-      return "The target's " + copy.to().name() + " has no column " + String.join(", ", lacking)
-          + ".";
+      return ofTarget(copy) + " has no column " + String.join(", ", lacking) + ".";
     }
     for (var name : names) {
       var shared = IntStream.range(0, names.size())
@@ -224,18 +260,15 @@ public final class Copier {
           .mapToObj(i -> chosen.get(i).name())
           .toList();
       if (shared.size() > 1) {
-        return "The target's " + copy.to().name() + " has one column " + name
-            + " for the source's columns " + String.join(", ", shared) + ".";
+        return ofTarget(copy) + " has one column " + name + " for the source's columns "
+            + String.join(", ", shared) + ".";
       }
     }
-    if (chosen.isEmpty()) {
-      return "The target's " + copy.to().name() + " has no column that takes a value.";
-    }
-    if (copy.existing() == Transfer.Existing.STOP && target.hasRows(copy.to())) {
-      return "The target's " + copy.to().name() + " has rows, which the run was to stop at.";
-    }
-    plans.put(copy, new Plan(Selection.of(copy.from(), chosen, from), names));
-    return null;
+    return chosen.isEmpty() ? ofTarget(copy) + " has no column that takes a value." : null;
+  }
+
+  private static String ofTarget(Transfer.Copy copy) {
+    return "The target's " + copy.to().name();
   }
 
   // Where the table is, as names that a server may take in any case.
@@ -263,41 +296,54 @@ public final class Copier {
   // Fails each table to be emptied whose rows a foreign key of a table that is not emptied would
   // delete or change as they go, until none is left.
   private void refuseChanging() {
-    for (var again = true; again; ) {
-      again = false;
-      var emptying = new HashSet<Table>();
-      for (var table : tables) {
-        if (table.state() == State.WAITING && table.copy().existing() == Transfer.Existing.EMPTY) {
-          emptying.add(table.copy().to());
-        }
-      }
-      for (var i = 0; i < tables.size(); i++) {
-        var to = tables.get(i).copy().to();
-        if (!emptying.contains(to)) {
-          continue;
-        }
-        for (var key : keys) {
-          if (key.referenced().equals(to)
-              && !key.table().equals(to)
-              && !emptying.contains(key.table())
-              && changes(key.onDelete())) {
-            tables.set(
-                i,
-                tables
-                    .get(i)
-                    .with(
-                        State.FAILED,
-                        "Emptying it would also "
-                            + (key.onDelete() == ForeignKey.Rule.CASCADE ? "delete" : "change")
-                            + " rows of " + key.table().name() + ", by its foreign key "
-                            + key.name() + ": empty " + key.table().name()
-                            + " in the copy too, or delete its rows first."));
-            again = true;
-            break;
-          }
-        }
+    var refusing = true;
+    while (refusing) {
+      refusing = refusedOne();
+    }
+  }
+
+  // Fails the first table to be emptied whose rows a foreign key of a table not emptied would
+  // delete or change; whether there was one.
+  private boolean refusedOne() {
+    var emptying = new HashSet<Table>();
+    for (var table : tables) {
+      if (table.state() == State.WAITING && table.copy().existing() == Transfer.Existing.EMPTY) {
+        emptying.add(table.copy().to());
       }
     }
+    for (var i = 0; i < tables.size(); i++) {
+      var to = tables.get(i).copy().to();
+      var key = emptying.contains(to) ? changing(to, emptying) : null;
+      if (key != null) {
+        tables.set(
+            i,
+            tables
+                .get(i)
+                .with(
+                    State.FAILED,
+                    "Emptying it would also "
+                        + (key.onDelete() == ForeignKey.Rule.CASCADE ? "delete" : "change")
+                        + " rows of " + key.table().name() + ", by its foreign key "
+                        + key.name() + ": empty " + key.table().name()
+                        + " in the copy too, or delete its rows first."));
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // The foreign key of a table not emptied that would delete or change its rows as the table's
+  // go, or null.
+  private ForeignKey changing(Table table, Set<Table> emptying) {
+    for (var key : keys) {
+      if (key.referenced().equals(table)
+          && !key.table().equals(table)
+          && !emptying.contains(key.table())
+          && changes(key.onDelete())) {
+        return key;
+      }
+    }
+    return null;
   }
 
   // Whether what a key does as its referenced row is deleted changes the referring row.
@@ -307,89 +353,120 @@ public final class Copier {
         || rule == ForeignKey.Rule.SET_DEFAULT;
   }
 
+  // How far a table's copy came: its entry as last told, and its rows written and committed.
+  private static final class Copying {
+    private Entry table;
+    private long written;
+    private long kept;
+    private boolean writing; // whether a write runs, whose failure may be a row's
+
+    Copying(Entry table) {
+      this.table = table;
+    }
+  }
+
   // Copies the table's rows, batch by batch, emptying it first where it is to be; whether all
   // were copied. Where it fails and its rollback fails too, it throws the rollback's failure.
   private boolean copy(int index) throws Exception {
-    var table = tables.get(index);
-    var plan = plans.get(table.copy());
-    var into = table.copy().to();
-    long written = 0;
-    long kept = 0;
-    var emptying = emptying(index);
-    var writing = false;
+    var copying = new Copying(tables.get(index));
+    var plan = plans.get(copying.table.copy());
     Source.Reading reading = null;
     try {
-      if (!emptying.isEmpty()) {
-        table = table.with(State.EMPTYING);
-        tables.set(index, table);
-        tell();
-        for (var other : emptying) {
-          target.empty(other);
-          deleting.add(other);
-        }
-      }
-      table = table.with(State.COPYING);
-      tables.set(index, table);
-      tell();
+      emptyFirst(index, copying);
+      enter(index, copying, State.COPYING);
       reading = source.read(plan.selection());
-      for (var more = true; more; ) {
-        var batch = reading.next(transfer.batch(), budget);
-        more = batch.more();
-        if (batch.rows().isEmpty()) {
-          continue;
-        }
-        writing = true;
-        written += target.write(into, plan.columns(), batch.rows());
-        writing = false;
-        if (transfer.commit() == Transfer.Commit.BATCH) {
-          commit();
-          kept = written;
-        }
-        tables.set(index, table.rows(written, kept));
-        tell();
-      }
-      if (written > 0) {
-        target.written(into, plan.columns());
+      copyRows(index, plan, reading, copying);
+      if (copying.written > 0) {
+        target.written(copying.table.copy().to(), plan.columns());
       }
       commit();
-      tables.set(index, table.rows(written, written).with(State.COPIED));
+      tables.set(index, copying.table.rows(copying.written, copying.written).with(State.COPIED));
       tell();
       return true;
     } catch (Exception e) {
-      var unended = attempt(target::rollback);
-      deleting.clear();
-      if (unended == null && kept > 0) {
-        // The rows kept move its sequences on, as all of them would have.
-        quietly(() -> {
-          target.written(into, plan.columns());
-          target.commit();
-        });
-      }
-      var left = table.rows(written, kept);
-      if (cancelled(e)) {
-        tables.set(index, left.with(State.CANCELLED));
-        throw new Cancel();
-      }
-      var problem =
-          table.state() == State.EMPTYING ? "Its rows could not be deleted: " + why(e) : why(e);
-      if (writing && refersToItself(into)) {
-        problem += " " + SELF;
-      }
-      if (unended != null) {
-        // What it wrote since its last commit may still be in the session, which the next
-        // table's commit would keep: the run stops, as where the session failed.
-        tables.set(
-            index, left.with(State.FAILED, problem + " Rolling it back failed: " + why(unended)));
-        throw unended;
-      }
-      tables.set(index, left.with(State.FAILED, problem));
-      tell();
-      return false;
+      return failed(index, plan, copying, e);
     } finally {
       if (reading != null) {
         quietly(reading::close);
       }
     }
+  }
+
+  // The table's copy enters the state, told.
+  private void enter(int index, Copying copying, State state) {
+    copying.table = copying.table.with(state);
+    tables.set(index, copying.table);
+    tell();
+  }
+
+  // Empties the tables that go before the table's copy, in its transaction.
+  private void emptyFirst(int index, Copying copying) throws Exception {
+    var emptying = emptying(index);
+    if (emptying.isEmpty()) {
+      return;
+    }
+    enter(index, copying, State.EMPTYING);
+    for (var other : emptying) {
+      target.empty(other);
+      deleting.add(other);
+    }
+  }
+
+  // Writes the rows as they are read, a batch at a time, committing as the transfer says.
+  private void copyRows(int index, Plan plan, Source.Reading reading, Copying copying)
+      throws Exception {
+    var into = copying.table.copy().to();
+    Batch batch;
+    do {
+      batch = reading.next(transfer.batch(), batchBytes);
+      if (!batch.rows().isEmpty()) {
+        copying.writing = true;
+        copying.written += target.write(into, plan.columns(), batch.rows());
+        copying.writing = false;
+        if (transfer.commit() == Transfer.Commit.BATCH) {
+          commit();
+          copying.kept = copying.written;
+        }
+        tables.set(index, copying.table.rows(copying.written, copying.kept));
+        tell();
+      }
+    } while (batch.more());
+  }
+
+  // Rolls back the table's copy that failed and tells why; false, or it throws where the run was
+  // cancelled or the rollback failed.
+  private boolean failed(int index, Plan plan, Copying copying, Exception e) throws Exception {
+    var into = copying.table.copy().to();
+    var unended = attempt(target::rollback);
+    deleting.clear();
+    if (unended == null && copying.kept > 0) {
+      // The rows kept move its sequences on, as all of them would have.
+      quietly(() -> {
+        target.written(into, plan.columns());
+        target.commit();
+      });
+    }
+    var left = copying.table.rows(copying.written, copying.kept);
+    if (cancelled(e)) {
+      tables.set(index, left.with(State.CANCELLED));
+      throw new Cancel();
+    }
+    var problem = copying.table.state() == State.EMPTYING
+        ? "Its rows could not be deleted: " + why(e)
+        : why(e);
+    if (copying.writing && refersToItself(into)) {
+      problem += " " + SELF;
+    }
+    if (unended != null) {
+      // What it wrote since its last commit may still be in the session, which the next table's
+      // commit would keep: the run stops, as where the session failed.
+      tables.set(
+          index, left.with(State.FAILED, problem + " Rolling it back failed: " + why(unended)));
+      throw unended;
+    }
+    tables.set(index, left.with(State.FAILED, problem));
+    tell();
+    return false;
   }
 
   // What its transaction commits: what was written, and the tables emptied in it.
@@ -411,17 +488,8 @@ public final class Copier {
     while (!frontier.isEmpty()) {
       var referred = frontier.removeFirst();
       for (var key : keys) {
-        if (!key.referenced().equals(referred) || key.table().equals(referred)) {
-          continue;
-        }
-        for (var j = 0; j < tables.size(); j++) {
-          if (j != index
-              && tables.get(j).copy().to().equals(key.table())
-              && tables.get(j).state() == State.WAITING
-              && toEmpty(j)
-              && found.add(j)) {
-            frontier.add(key.table());
-          }
+        if (key.referenced().equals(referred) && !key.table().equals(referred)) {
+          addEmptying(index, key.table(), found, frontier);
         }
       }
     }
@@ -429,6 +497,20 @@ public final class Copier {
         .sorted(Comparator.reverseOrder())
         .map(j -> tables.get(j).copy().to())
         .toList();
+  }
+
+  // Adds the tables of the copies that wait to be emptied, other than the index's, that are the
+  // table referring.
+  private void addEmptying(int index, Table referring, Set<Integer> found, Deque<Table> frontier) {
+    for (var j = 0; j < tables.size(); j++) {
+      if (j != index
+          && tables.get(j).copy().to().equals(referring)
+          && tables.get(j).state() == State.WAITING
+          && toEmpty(j)
+          && found.add(j)) {
+        frontier.add(referring);
+      }
+    }
   }
 
   // Whether the table is to be emptied and was not yet.
@@ -472,7 +554,7 @@ public final class Copier {
   // What must run as a table or the run ends, also where it was cancelled: its failure is left
   // out, as the run's own says more.
   private interface Step {
-    void run() throws Exception;
+    void run() throws QueryException, CatalogException, InterruptedException;
   }
 
   private static void quietly(Step step) {
