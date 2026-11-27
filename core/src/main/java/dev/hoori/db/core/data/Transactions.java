@@ -10,6 +10,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Savepoint;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * The transactions that this package's writes and reads open of their own on a connection that has
@@ -92,17 +93,19 @@ final class Transactions {
   static void end(Connection connection, Provider provider, boolean commit) throws QueryException {
     // Whether the transaction ended as it was to, committed or rolled back.
     var ended = new AtomicBoolean();
-    var givenUp = new AtomicBoolean();
+    // Whichever comes first of the commit and the bound: a commit never begins once the
+    // connection is given up.
+    var first = new AtomicReference<Claim>();
     try {
       Query.within(
           connection,
           provider,
           Execution.ENDING,
           () -> {
-            finish(connection, commit, ended, givenUp);
+            finish(connection, commit, ended, first);
             return null;
           },
-          () -> givenUp.set(true));
+          () -> first.compareAndSet(null, Claim.GIVEN_UP));
     } catch (QueryException e) {
       if (!ended.get()) {
         throw e;
@@ -110,13 +113,27 @@ final class Transactions {
     }
   }
 
+  // What came first as the transaction ends.
+  private enum Claim {
+    COMMIT,
+    GIVEN_UP
+  }
+
   private static void finish(
-      Connection connection, boolean commit, AtomicBoolean ended, AtomicBoolean givenUp)
+      Connection connection, boolean commit, AtomicBoolean ended, AtomicReference<Claim> first)
       throws SQLException {
-    if (connection.getAutoCommit()) {
+    boolean autoCommit;
+    try {
+      autoCommit = connection.getAutoCommit();
+    } catch (SQLException e) {
+      // What it is left in cannot be told: the server rolls back what it did not commit.
+      abort(connection);
+      throw e;
+    }
+    if (autoCommit) {
       return; // never begun
     }
-    var failed = commit ? commit(connection, ended, givenUp) : null;
+    var failed = commit ? commit(connection, ended, first) : null;
     if (!ended.get()) {
       rollBack(connection, commit, ended, failed);
     }
@@ -135,8 +152,8 @@ final class Transactions {
 
   // The commit's failure, or null where it committed.
   private static SQLException commit(
-      Connection connection, AtomicBoolean ended, AtomicBoolean givenUp) {
-    if (givenUp.get()) {
+      Connection connection, AtomicBoolean ended, AtomicReference<Claim> first) {
+    if (!first.compareAndSet(null, Claim.COMMIT)) {
       return new SQLException("Given up before the commit", "08006");
     }
     try {
