@@ -88,8 +88,7 @@ final class FileRunDialog {
   private String endedBy; // what ended the run, where the app did, or null
   private Lane lane; // the run's own session, or null
   private char[] password; // a copy, to mask it in what failed; wiped once that is masked
-  // Whether the server committed DDL by itself, as it was when the run began.
-  private boolean ddlCommits;
+
   FileRun.Progress progress; // the last told, or null before the first
   FileRun.Report report; // once it ended
   String failure; // once it ended without a report, why
@@ -184,7 +183,6 @@ final class FileRunDialog {
     problem = null;
     lane = session.lane();
     password = session.password();
-    ddlCommits = !transactionalDdl(s, profile);
     var app = s.app;
     var told = new AtomicLong(System.nanoTime() - TOLD);
     var options = new FileRun.Options(onError == OnError.GO_ON && !transaction, transaction);
@@ -567,19 +565,15 @@ final class FileRunDialog {
     return text.toString();
   }
 
-  // What a rollback of the run's transaction left of the file: what the server committed by
-  // itself stays.
+  // What a rollback of the run's transaction left of the file: what ran up to where the server
+  // committed by itself, as at DDL on MariaDB and MySQL, stays.
   private String rolledBack() {
     long line = report.committedAt();
     if (line > 0) {
       return " The transaction was rolled back, but what ran up to line " + Format.LONG.text(line)
-          + " stays, as the server committed it by itself there"
-          + (ddlCommits ? ", and so does DDL that ran after it." : ".");
+          + " stays, as the server committed it by itself there.";
     }
-    return ddlCommits
-        ? " The transaction was rolled back, but DDL that ran stays, as the server committed it by"
-            + " itself."
-        : " The transaction was rolled back: nothing of the file was kept.";
+    return " The transaction was rolled back: nothing of the file was kept.";
   }
 
   // Whether the connected server rolls back DDL with the transaction, as far as it is known.

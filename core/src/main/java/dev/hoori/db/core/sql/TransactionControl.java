@@ -1,6 +1,7 @@
 package dev.hoori.db.core.sql;
 
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.dialect.ClientDialect;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -29,6 +30,21 @@ public final class TransactionControl {
    */
   public static boolean commits(String sql, Provider provider) {
     return any(sql, provider, provider.dialect().client()::commitsImplicitly);
+  }
+
+  /**
+   * What the statement does to the tables the session locked, as the dialect's {@link
+   * ClientDialect#tableLocks} tells, by the first way the server may read it that does any.
+   */
+  public static ClientDialect.TableLocks tableLocks(String sql, Provider provider) {
+    var client = provider.dialect().client();
+    for (var reading : Tokens.readings(provider)) {
+      var locks = client.tableLocks(words(sql, provider, reading));
+      if (locks != ClientDialect.TableLocks.KEEPS) {
+        return locks;
+      }
+    }
+    return ClientDialect.TableLocks.KEEPS;
   }
 
   // Whether the words of any reading of the code are such.

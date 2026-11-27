@@ -326,13 +326,13 @@ class StatementReaderTest {
     var text = prologue + "/*!40101 SET NAMES utf8 */;\nSELECT 1;\n-- the end\n";
     for (int chunk : new int[] {1, 7, 64}) {
       // Held whole, the prologue would run past what a step may take.
-      var reader =
-          new StatementReader(new StringReader(text), MYSQL, text.length(), chunk, 1_024);
+      var reader = new StatementReader(new StringReader(text), MYSQL, text.length(), chunk, 1_024);
       var executable = reader.next().orElseThrow();
       assertEquals(
           new StatementReader.Sql("/*!40101 SET NAMES utf8 */", 4_001, prologue.length()),
           executable);
-      assertEquals(new StatementReader.Sql("SELECT 1", 4_002, prologue.length() + 28),
+      assertEquals(
+          new StatementReader.Sql("SELECT 1", 4_002, prologue.length() + 28),
           reader.next().orElseThrow());
       assertTrue(reader.next().isEmpty());
       assertEquals(text.length(), reader.offset());

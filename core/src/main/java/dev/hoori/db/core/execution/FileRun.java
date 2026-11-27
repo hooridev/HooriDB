@@ -1,6 +1,7 @@
 package dev.hoori.db.core.execution;
 
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.dialect.ClientDialect;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
@@ -117,8 +118,10 @@ public final class FileRun {
    * transaction.
    *
    * @param committedAt in one transaction, the line of the last statement that ran at which the
-   *     server committed by itself, as {@link TransactionControl#commits} finds one, so that what
-   *     ran up to it stays whatever became of the transaction; 0 where none ran
+   *     server committed by itself, as {@link TransactionControl#commits} finds one, or an {@code
+   *     UNLOCK TABLES} where the file locked tables, so that what ran up to it stays whatever
+   *     became of the transaction; 0 where none ran
+   *
    */
   public record Report(
       Ending ending,
@@ -178,6 +181,7 @@ public final class FileRun {
   private long statements; // as Progress counts them
   private long failed;
   private long committedAt; // as Report says it
+  private boolean locked; // the file locked tables, as MySQL's LOCK TABLES does
 
   /**
    * A run of the file, with the provider's lexical rules, which tells {@code progress} how far it
@@ -331,7 +335,7 @@ public final class FileRun {
 
   // A statement of the file: run, or refused where it would end the run's own transaction. One
   // at which the server commits by itself is noted, failed or not, as the server commits before
-  // it runs the statement.
+  // it runs the statement: an UNLOCK TABLES only where the file locked tables.
   private Optional<Failure> statement(Target target, StatementReader.Sql sql) {
     if (options.transaction() && TransactionControl.in(sql.sql(), provider)) {
       return Optional.of(Failure.of(
@@ -340,9 +344,15 @@ public final class FileRun {
               + " would end: the run stops, and what ran is rolled back. Run the file without one"
               + " transaction to have it keep its own."));
     }
+    var locks = TransactionControl.tableLocks(sql.sql(), provider);
+    boolean commits = TransactionControl.commits(sql.sql(), provider)
+        || locks == ClientDialect.TableLocks.UNLOCKS && locked;
     var failure = target.run(sql.sql());
-    if (options.transaction() && TransactionControl.commits(sql.sql(), provider)) {
+    if (options.transaction() && commits) {
       committedAt = sql.line();
+    }
+    if (locks != ClientDialect.TableLocks.KEEPS) {
+      locked = locks == ClientDialect.TableLocks.LOCKS;
     }
     return failure;
   }

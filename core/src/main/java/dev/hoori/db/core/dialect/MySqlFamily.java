@@ -115,10 +115,10 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
           && (next.equals("=") || next.equals(":"));
     }
 
-    // Of the statements that MySQL's manual lists as causing an implicit commit, those that are
-    // not DDL and that a file may well hold: locking tables, granting, users and roles, and the
-    // maintenance of tables and caches. UNLOCK TABLES commits only where LOCK TABLES locked any,
-    // as one before it in a dump has.
+    // Of the statements that MySQL's manual lists as causing an implicit commit, those that a file
+    // may well hold: DDL but for a temporary table's, locking tables, granting, users and roles,
+    // and the maintenance of tables and caches. UNLOCK TABLES commits only where LOCK TABLES
+    // locked any, as tableLocks tells.
     @Override
     public boolean commitsImplicitly(List<String> words) {
       if (words.isEmpty()) {
@@ -126,7 +126,7 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
       }
       var second = words.size() > 1 ? words.get(1) : "";
       return switch (words.getFirst()) {
-        case "lock", "unlock" -> second.equals(TABLE) || second.equals("tables");
+        case "lock" -> locksTables(second);
         case "grant", "revoke", "flush" -> true;
         // Not MariaDB's ANALYZE SELECT, which runs and explains a query.
         case "analyze", "optimize", "repair" ->
@@ -136,15 +136,29 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
                   && words.get(2).equals(TABLE);
         case "check" -> second.equals(TABLE);
         case "cache", "load" -> second.equals("index");
-        case "create", "alter", "drop", "rename" -> {
-          // CREATE OR REPLACE USER, as MariaDB has it
-          var what = second.equals("or") && words.size() > 3 ? words.get(3) : second;
-          yield what.equals("user") || what.equals("role");
-        }
+        // CREATE OR REPLACE TEMPORARY TABLE, as MariaDB has it, commits nothing either.
+        case "create", "drop" ->
+          !(second.equals("temporary")
+              || second.equals("or") && words.size() > 3 && words.get(3).equals("temporary"));
+        case "alter", "rename", "truncate" -> true;
         case "set" ->
           second.equals("password") || words.contains("default") && words.contains("role");
         default -> false;
       };
+    }
+
+    @Override
+    public TableLocks tableLocks(List<String> words) {
+      var second = words.size() > 1 ? words.get(1) : "";
+      return switch (words.isEmpty() ? "" : words.getFirst()) {
+        case "lock" -> locksTables(second) ? TableLocks.LOCKS : TableLocks.KEEPS;
+        case "unlock" -> locksTables(second) ? TableLocks.UNLOCKS : TableLocks.KEEPS;
+        default -> TableLocks.KEEPS;
+      };
+    }
+
+    private static boolean locksTables(String second) {
+      return second.equals(TABLE) || second.equals("tables");
     }
 
     @Override

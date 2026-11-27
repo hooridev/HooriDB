@@ -205,7 +205,24 @@ class FileRunTest {
             "end"),
         session.sent);
 
+    // An UNLOCK TABLES without a LOCK TABLES before it commits nothing, unlike DDL but for a
+    // temporary table's.
+    var unlocked = run(
+        MYSQL,
+        "INSERT 1;\nUNLOCK TABLES;\nCREATE TEMPORARY TABLE t (id int);\nSELEC 2;",
+        new FileRun.Options(false, true),
+        new Session(Map.of("SELEC 2", WRONG)));
+    assertEquals(0, unlocked.committedAt());
+    var created = run(
+        MYSQL,
+        "INSERT 1;\nCREATE TABLE t (id int);\nINSERT 2;\nLOCK TABLES t WRITE;\nUNLOCK TABLES;\n"
+            + "UNLOCK TABLES;\nSELEC 3;",
+        new FileRun.Options(false, true),
+        new Session(Map.of("SELEC 3", WRONG)));
+    assertEquals(5, created.committedAt());
+
     // Not without one transaction, and not where the server does not.
+
     var own = run(MARIADB, text, new FileRun.Options(false, false), new Session(Map.of()));
     assertEquals(0, own.committedAt());
     var pg =

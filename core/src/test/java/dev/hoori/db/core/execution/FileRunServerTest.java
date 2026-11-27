@@ -222,6 +222,37 @@ class FileRunServerTest {
   }
 
   @ParameterizedTest
+  @MethodSource("mysqlFamily")
+  void oneTransactionTellsThatDdlCommittedWhatRanBeforeButNotAnUnlockAlone(Provider provider)
+      throws Exception {
+    var table = "file_run_ddl";
+    try (var writer = open(provider)) {
+      execute(
+          writer,
+          "DROP TABLE IF EXISTS " + table + ", file_run_ddl_made",
+          "CREATE TABLE " + table + " (id integer)");
+    }
+    var unlocked = "INSERT INTO " + table + " VALUES (1);\nUNLOCK TABLES;\n" + "INSERT INTO "
+        + table + " VALUES ('x');\n";
+    var made = "INSERT INTO " + table + " VALUES (2);\nCREATE TABLE file_run_ddl_made (id int);\n"
+        + "INSERT INTO " + table + " VALUES ('x');\n";
+    try (var connection = open(provider);
+        var check = open(provider)) {
+      var tx = new FileRun.Options(false, true);
+      var report = run(connection, provider, file("unlocked.sql", unlocked), tx);
+      assertEquals(FileRun.Kept.ROLLED_BACK, report.transaction());
+      assertEquals(0, report.committedAt());
+      // The UNLOCK TABLES committed nothing, as another session sees.
+      assertEquals(0, selectLong(check, "SELECT count(*) FROM " + table));
+      var ddl = run(connection, provider, file("made.sql", made), tx);
+      assertEquals(FileRun.Kept.ROLLED_BACK, ddl.transaction());
+      assertEquals(2, ddl.committedAt());
+      // The CREATE TABLE committed the insert before it.
+      assertEquals(2, selectLong(check, "SELECT max(id) FROM " + table));
+    }
+  }
+
+  @ParameterizedTest
   @ValueSource(
       strings = {
         "BEGIN NOT ATOMIC COMMIT; END",

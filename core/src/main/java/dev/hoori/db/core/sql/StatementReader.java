@@ -47,6 +47,7 @@ public final class StatementReader implements Closeable {
    * max_allowed_packet} takes by default: a statement that runs on past them fails the read.
    */
   public static final int LONGEST = 1 << 24;
+
   private static final char BYTE_ORDER_MARK = 0xFEFF;
 
   /** What the file holds next. */
@@ -358,8 +359,7 @@ public final class StatementReader implements Closeable {
   // Queues the parts of the window that what follows in the file cannot change, each with the line
   // and offset where it begins and where the reader is after it, up to the first copy, as what
   // follows that is rows, which the scan took for statements.
-  private void queue(List<Statements.Part> parts, String window, int context)
-      throws IOException {
+  private void queue(List<Statements.Part> parts, String window, int context) throws IOException {
     int position = at;
     long lineAt = line;
     long offsetAt = offset;

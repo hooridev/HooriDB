@@ -179,6 +179,12 @@ public final class PostgreSql implements Dialect {
       return false;
     }
 
+    // Its LOCK TABLE holds until the transaction ends, which commits nothing by itself.
+    @Override
+    public TableLocks tableLocks(List<String> words) {
+      return TableLocks.KEEPS;
+    }
+
     // COPY … FROM STDIN, as psql reads it: the first FROM names the source, and a later one is
     // of its WHERE.
     @Override

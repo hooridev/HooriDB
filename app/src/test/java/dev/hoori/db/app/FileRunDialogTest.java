@@ -208,7 +208,7 @@ class FileRunDialogTest {
     var rolled = c.tree("rolled");
     assertTrue(
         rolled.contains("The transaction was rolled back, but what ran up to line 3 stays, as the"
-            + " server committed it by itself there, and so does DDL that ran after it."),
+            + " server committed it by itself there."),
         rolled);
   }
 
