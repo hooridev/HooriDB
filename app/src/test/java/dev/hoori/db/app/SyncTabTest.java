@@ -244,6 +244,58 @@ class SyncTabTest {
     assertTrue(keyed.contains("1 row equal"), keyed);
   }
 
+  // A copy of the table on another server has the same database, schema and name, and pairs with
+  // it. Where that connection moves to another server, the comparison forgets it and what was
+  // found, a preview of it too, but not where it only connects anew; where the source's moves,
+  // the comparison closes.
+  @Test
+  void theSameTableOnAnotherServerPairsUntilItsConnectionMoves() throws Exception {
+    var host = "mirror.example.com";
+    c.servers.serve(host, Provider.POSTGRESQL, "16.4", OUTLINE);
+    c.servers.values(
+        host + "/shop.public.orders",
+        List.of(row(1L, "new", "10.00", "a"), row(2L, "paid", "25.00", "b")));
+    var mirror = ConnectionProfile.of(Provider.POSTGRESQL)
+        .withName("mirror")
+        .withHost(host)
+        .withDatabase("shop")
+        .withUser("shop_app");
+    var app = compared(SHOP, mirror);
+    c.run(app, open("mirror") + SETTLE);
+    var s = app.state();
+    var tab = s.syncs(null).getFirst();
+    app.post(() -> tab.choose(s, new SyncTab.Target(mirror.id(), tab.table)));
+    c.run(app, "await\nframe\n" + SETTLE + COMPARE + "frame\nframe\nsnap mirrored\n");
+    var mirrored = c.tree("mirrored");
+    assertTrue(mirrored.contains("Rows are paired by the primary key (id)"), mirrored);
+    assertTrue(mirrored.contains("2 rows only in the source"), mirrored);
+    assertTrue(mirrored.contains("1 row different"), mirrored);
+    assertTrue(mirrored.contains("1 row equal"), mirrored);
+
+    c.run(app, "press role=button label=\"Apply…\"\nframe\nadvance 1\nframe\n");
+    app.post(() -> s.put(s.profile(mirror.id()).withUser("mirror_app")));
+    c.run(app, "await\nframe\n" + SETTLE + "snap anew\n");
+    var anew = c.tree("anew");
+    assertTrue(anew.contains("1 row equal"), anew);
+    assertTrue(anew.contains("will be written to orders"), anew);
+
+    app.post(() -> s.put(s.profile(mirror.id()).withHost("elsewhere.example.com")));
+    c.run(app, "await\nframe\n" + SETTLE + "snap moved\n");
+    var moved = c.tree("moved");
+    assertFalse(moved.contains("1 row equal"), moved);
+    assertFalse(moved.contains("will be written to"), moved);
+    assertTrue(moved.contains("Choose a target"), moved);
+    c.run(app, choose("store · shop.public.orders_copy") + SETTLE + COMPARE + "snap again\n");
+    var again = c.tree("again");
+    assertTrue(again.contains("1 row only in the target"), again);
+    assertFalse(again.contains("will be written to"), again);
+
+    app.post(() -> s.put(s.profile(SHOP.id()).withHost("elsewhere.example.com")));
+    c.run(app, "await\nframe\n" + SETTLE + "snap closed\n");
+    assertEquals(List.of(), s.syncs(null));
+    assertFalse(c.tree("closed").contains("label=\"" + TAB + "\""), c.tree("closed"));
+  }
+
   @Test
   void theChangesCanBeSavedAsAScriptInstead() throws Exception {
     var app = compared(SHOP);

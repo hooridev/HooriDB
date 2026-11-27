@@ -146,8 +146,8 @@ final class SyncTab implements Tab {
   }
 
   /**
-   * The tables it can be compared with: those the tree read of connections of its provider, with
-   * those of the same name first, as a copy of the table elsewhere is the likely one.
+   * The tables it can be compared with: those the tree read of connections of its provider, but
+   * itself, with those of the same name first, as a copy of the table elsewhere is the likely one.
    */
   List<Target> candidates(State s) {
     record Labeled(Target target, boolean other, String label) {}
@@ -252,9 +252,10 @@ final class SyncTab implements Tab {
         null);
   }
 
-  // What was compared, and the grid's lines of it, made once.
+  // What was compared, and the grid's lines of it, made once; a preview of what was before goes.
   private void show(Sync.Compared c) {
     compared = c;
+    preview = null;
     lines = c == null ? List.of() : lines(c);
   }
 
