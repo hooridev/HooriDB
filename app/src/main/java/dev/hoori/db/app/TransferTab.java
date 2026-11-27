@@ -298,6 +298,7 @@ final class TransferTab implements Tab, Guard.Guarded {
     var database = end.database;
     var schema = end.schema;
     end.tables = null;
+    end.problem = null; // what failed to be read before
     end.reading = end.lane.ask(
         s.app,
         "read the tables to copy",

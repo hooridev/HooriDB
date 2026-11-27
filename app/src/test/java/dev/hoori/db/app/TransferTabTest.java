@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
+import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.log.Purpose;
@@ -153,14 +154,8 @@ class TransferTabTest {
   @Test
   void aCancelRollsBackWhatWasNotCommitted() throws Exception {
     var app = opened(MARIA);
-    var gate = c.servers.hold("copy write " + ITEMS);
-    c.run(
-        app,
-        choose("Target database", "archive")
-            + SETTLE
-            + "press role=checkbox label=\"stock\"\nframe\n"
-            + COPY
-            + "frame\nadvance 1\nframe\nsnap running\n");
+    var gate = running(app);
+    c.run(app, "frame\nsnap running\n");
     assertTrue(c.tree("running").contains("label=\"Cancel the copy\""), c.tree("running"));
     c.run(
         app, "press role=button label=\"Cancel the copy\"\nframe\n" + SETTLE + "snap cancelled\n");
@@ -223,7 +218,10 @@ class TransferTabTest {
             .toList());
   }
 
-  /** Starts the copy of items into archive, which waits at its write: the gate it waits at. */
+  /**
+   * Starts the copy of items into archive, which waits at its write, once it got there: the gate it
+   * waits at.
+   */
   CountDownLatch running(App<State> app) throws Exception {
     var gate = c.servers.hold("copy write " + ITEMS);
     c.run(
@@ -234,6 +232,7 @@ class TransferTabTest {
             + COPY
             + "frame\nadvance 1\nframe\n");
     assertTrue(app.state().transfers(null).getFirst().running != null);
+    CatalogTreeTest.eventually(() -> c.servers.calls.contains("copy write " + ITEMS));
     return gate;
   }
 
@@ -354,6 +353,54 @@ class TransferTabTest {
     assertTrue(tree.contains("Target: choose its schema."), tree);
     assertTrue(
         tree.lines().anyMatch(l -> l.contains("label=\"Copy\"") && l.contains("disabled")), tree);
+  }
+
+  @Test
+  void aSchemaReadAfterOneThatFailedClearsItsProblem() throws Exception {
+    var host = "pg.copy.example.com";
+    c.servers.serve(host, Provider.POSTGRESQL, "16.4", """
+        shop
+          public
+            items
+              *id: integer
+          secret
+            items
+              *id: integer
+        archive
+          public
+            items
+              *id: integer
+        """);
+    c.servers.fail(
+        "tables " + host + "/shop.secret",
+        FakeServers.notRead(CatalogException.Failure.ACCESS_DENIED));
+    var pg = ConnectionProfile.of(Provider.POSTGRESQL)
+        .withName("pg")
+        .withHost(host)
+        .withUser("app")
+        .withDatabase("shop");
+    var app = c.app(pg);
+    c.ready(app, pg);
+    c.run(
+        app,
+        START
+            + open("pg")
+            + SETTLE
+            + menu("shop", "Copy tables…")
+            + SETTLE
+            + choose("Target database", "archive")
+            + SETTLE
+            + choose("Source schema", "secret")
+            + SETTLE
+            + "snap denied\n");
+    var denied = c.tree("denied");
+    assertTrue(denied.contains("Source not read"), denied);
+
+    c.run(app, choose("Source schema", "public") + SETTLE + "snap public\n");
+    var tree = c.tree("public");
+    assertFalse(tree.contains("Source not read"), tree);
+    assertTrue(
+        tree.lines().anyMatch(l -> l.contains("label=\"Copy\"") && !l.contains("disabled")), tree);
   }
 
   @Test
