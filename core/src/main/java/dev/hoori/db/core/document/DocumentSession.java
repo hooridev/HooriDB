@@ -169,9 +169,14 @@ public final class DocumentSession implements AutoCloseable {
 
   /** The collections and views of the database, by name; the server's own are left out. */
   public List<Table> collections(Database database) throws CatalogException {
+    return collections(Purpose.CATALOG, database);
+  }
+
+  /** As {@link #collections(Database)}, recorded for the purpose given. */
+  public List<Table> collections(Purpose purpose, Database database) throws CatalogException {
     try {
       var documents = all(
-          Purpose.CATALOG,
+          purpose,
           database.name(),
           Document.of(
               "listCollections",
@@ -207,31 +212,37 @@ public final class DocumentSession implements AutoCloseable {
    */
   public List<Column> fields(Table collection) throws CatalogException {
     try {
-      return fields(collection, sample(collection));
+      return fields(collection, sampleDocuments(Purpose.CATALOG, collection));
     } catch (DocumentException e) {
       throw catalog(e);
     }
   }
 
-  private List<Document> sample(Table collection) throws DocumentException {
+  /**
+   * {@link #SAMPLE} documents of the collection, in the order of their ids, recorded for the
+   * purpose given: chosen at random where the server can, else its first ones, as of a view.
+   */
+  public List<Document> sampleDocuments(Purpose purpose, Table collection)
+      throws DocumentException {
     // In the order of their ids, so that the fields come in the same order each time.
     var pipeline = Document.array(
         Document.of("$sample", Document.of("size", SAMPLE)),
         Document.of("$sort", Document.of("_id", 1)));
     try {
-      return first(collection, pipeline);
+      return first(purpose, collection, pipeline);
     } catch (DocumentException e) {
       // A server or view that cannot sample: the first documents then.
       if (e.kind() != DocumentException.Kind.SERVER) {
         throw e;
       }
-      return first(collection, Document.array(Document.of("$limit", SAMPLE)));
+      return first(purpose, collection, Document.array(Document.of("$limit", SAMPLE)));
     }
   }
 
-  private List<Document> first(Table collection, List<Object> pipeline) throws DocumentException {
+  private List<Document> first(Purpose purpose, Table collection, List<Object> pipeline)
+      throws DocumentException {
     return all(
-        Purpose.CATALOG,
+        purpose,
         database(collection),
         Document.of(
             "aggregate",
@@ -289,7 +300,7 @@ public final class DocumentSession implements AutoCloseable {
    */
   public List<Field> paths(Table collection) throws CatalogException {
     try {
-      return paths(sample(collection));
+      return paths(sampleDocuments(Purpose.CATALOG, collection));
     } catch (DocumentException e) {
       throw catalog(e);
     }
@@ -457,12 +468,19 @@ public final class DocumentSession implements AutoCloseable {
    * collection's metadata count ignores it.
    */
   public OptionalLong estimate(Table collection, Document filter) throws QueryException {
-    if (collection.kind() == Table.Kind.VIEW || filter != null && !filter.isEmpty()) {
+    if (filter != null && !filter.isEmpty()) {
+      return OptionalLong.empty();
+    }
+    return estimate(Purpose.ROWS, collection);
+  }
+
+  /** As {@link #estimate(Table)}, recorded for the purpose given. */
+  public OptionalLong estimate(Purpose purpose, Table collection) throws QueryException {
+    if (collection.kind() == Table.Kind.VIEW) {
       return OptionalLong.empty();
     }
     try {
-      var reply =
-          command(Purpose.ROWS, database(collection), Document.of("count", collection.name()));
+      var reply = command(purpose, database(collection), Document.of("count", collection.name()));
       return reply.get("n") instanceof Number n
           ? OptionalLong.of(n.longValue())
           : OptionalLong.empty();
@@ -751,8 +769,12 @@ public final class DocumentSession implements AutoCloseable {
     return new Cursor(Purpose.STATEMENT, database, reply);
   }
 
-  // All the documents of a command that opens a cursor, which is freed where reading it fails.
-  private List<Document> all(Purpose purpose, String database, Document command)
+  /**
+   * All the documents of a command that opens a cursor, run as {@link #command(String, Document)}
+   * runs it, with its {@code getMore} and {@code killCursors} for the purpose given; the cursor is
+   * freed where reading it fails.
+   */
+  public List<Document> all(Purpose purpose, String database, Document command)
       throws DocumentException {
     var cursor = new Cursor(purpose, database, command(purpose, database, command));
     var documents = new ArrayList<Document>();

@@ -81,7 +81,9 @@ final class Keeping {
     consolesKept = new Kept("consoles", () -> {
       var list = new ArrayList<StoredConsole>();
       for (var x : s.consoles(null)) {
-        list.add(x.stored());
+        if (!x.definition) {
+          list.add(x.stored());
+        }
       }
       list.addAll(unseen);
       return Kept.writing(list, consoleStore::save);

@@ -121,6 +121,9 @@ public abstract class RowsDialect {
   /** A case-insensitive {@code LIKE} of the quoted column as text, {@code !} escaping. */
   abstract String like(String column, Field field, String pattern);
 
+  /** A {@code LIKE} of the quoted column as text, case and all, {@code !} escaping. */
+  abstract String likeExactly(String column, Field field, String pattern);
+
   /** The quoted column as text equal to {@code value}, whatever the case. */
   abstract String equalsIgnoringCase(String column, Field field, String value);
 
@@ -129,6 +132,9 @@ public abstract class RowsDialect {
 
   /** A case-insensitive regular expression match of the quoted column as text. */
   abstract String matches(String column, Field field, String expression);
+
+  /** A regular expression match of the quoted column as text, case and all. */
+  abstract String matchesExactly(String column, Field field, String expression);
 
   /**
    * The quoted column compared by {@code operator} ({@code =}, {@code >=} or {@code <=}) with a

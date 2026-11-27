@@ -34,7 +34,7 @@ final class MonitorGrids {
     float[] of;
     final DataGrid.Fit fit = new DataGrid.Fit();
 
-    private Widths size(int columns) {
+    Widths size(int columns) {
       if (of == null || of.length != columns) {
         of = new float[columns];
         Arrays.fill(of, -1);
@@ -136,11 +136,14 @@ final class MonitorGrids {
         .defaultFocus();
   }
 
-  private static final DataGrid.Align LEFT = DataGrid.Align.LEFT;
-  private static final DataGrid.Align RIGHT = DataGrid.Align.RIGHT;
+  static final DataGrid.Align LEFT = DataGrid.Align.LEFT;
+  static final DataGrid.Align RIGHT = DataGrid.Align.RIGHT;
 
-  // The selection follows its items by their keys as reads and searches move them.
-  private static <T> DataGrid.Options options(
+  /**
+   * The options of a grid of the items: its selection follows them by their keys as reads and
+   * searches move them, it copies, keeps the widths the user gives, and fits its columns once.
+   */
+  static <T> DataGrid.Options options(
       Widths w,
       DataGrid.Selection selection,
       App<State> app,
@@ -164,8 +167,11 @@ final class MonitorGrids {
     return h;
   }
 
-  // A column of text without a type, so its header shows no type's icon; it is not sorted.
-  private static <T> DataGrid.Column column(
+  /**
+   * A column of text without a type, so its header shows no type's icon, at its width in the
+   * widths, else that many controls wide; it is not sorted.
+   */
+  static <T> DataGrid.Column column(
       Widths w,
       int index,
       String title,

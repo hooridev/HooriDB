@@ -10,6 +10,7 @@ import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.window.SystemAppearance;
 import com.rethinkj.ui.window.Window;
 import com.rethinkj.ui.window.Windows;
+import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
@@ -31,6 +32,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 
@@ -622,8 +624,8 @@ final class State {
   /**
    * Puts the profile in place of the one with its id, and selects it; a new one goes last into the
    * folder its dialog was opened for, which opens, else at the top. Where it reaches another
-   * server or database now, the tabs of its tables close: their records name tables of the old
-   * one. Its consoles stay, with their texts and databases.
+   * server or database now, the tabs of its tables and its searches close: their records name
+   * tables of the old one. Its consoles stay, with their texts and databases.
    */
   void put(ConnectionProfile profile) {
     var old = profile(profile.id());
@@ -634,6 +636,7 @@ final class State {
             || old.srv() != profile.srv()
             || !database(old).equals(database(profile)))) {
       close(tables(profile.id()));
+      close(finds(profile.id()));
     }
     if (old == null
         && workspace.fits(dialogs.placing, profile)) { // a folder gone meanwhile: the top
@@ -1043,6 +1046,7 @@ final class State {
     exitAt = noticed;
     consoles(null).forEach(ConsoleTab::end);
     monitors(null).forEach(m -> m.end(this));
+    finds(null).forEach(f -> f.end(this));
     int at = ++exits;
     app.after(EXIT_SECONDS, () -> {
       if (exits == at && guard.quitting() && closing > waived) {
@@ -1180,7 +1184,10 @@ final class State {
     openConsole(id, group, database, sql);
   }
 
-  /** An open console of the connection on the database, one in these tabs first; or null. */
+  /**
+   * An open console of the connection on the database, one in these tabs first, that is neither a
+   * query's nor a definition's; or null.
+   */
   private ConsoleTab findConsole(UUID id, String database, TabGroups.Group<Tab> preferred) {
     var groups = new ArrayList<>(tabs.groups());
     groups.remove(preferred);
@@ -1189,6 +1196,7 @@ final class State {
       for (var tab : group.tabs()) {
         if (tab instanceof ConsoleTab x
             && x.queryId == null
+            && !x.definition // a definition to read, which does not run
             && id.equals(x.id)
             && Objects.equals(x.database, database)) {
           return x;
@@ -1214,6 +1222,7 @@ final class State {
       case TableTab x -> x.id;
       case ConsoleTab x -> x.id;
       case MonitorTab x -> x.id;
+      case FindTab x -> x.id;
     };
   }
 
@@ -1236,6 +1245,112 @@ final class State {
     var monitor = new MonitorTab(this, id);
     tabs.add(group, group.tabs().size(), monitor);
     monitor.open(this);
+  }
+
+  /**
+   * Opens a search of the schema or database of the connection in the window of these tabs, or
+   * goes to the one it has, in whichever window.
+   */
+  void openFind(UUID id, Container scope, TabGroups.Group<Tab> group) {
+    if (profile(id) == null) {
+      return;
+    }
+    for (var each : tabs.groups()) {
+      for (int i = 0; i < each.tabs().size(); i++) {
+        if (each.tabs().get(i) instanceof FindTab x && x.id.equals(id) && x.scope.equals(scope)) {
+          tabs.select(each, i);
+          return;
+        }
+      }
+    }
+    tabs.add(group, group.tabs().size(), new FindTab(this, id, scope));
+  }
+
+  /** The searches of every window, of the connection or of all where it is null. */
+  List<FindTab> finds(UUID id) {
+    var all = new ArrayList<FindTab>();
+    for (var group : tabs.groups()) {
+      for (var tab : group.tabs()) {
+        if (tab instanceof FindTab x && (id == null || x.id.equals(id))) {
+          all.add(x);
+        }
+      }
+    }
+    return all;
+  }
+
+  /** A schema or database of a connection to search. */
+  record FindScope(UUID id, Container scope) {}
+
+  /**
+   * What Find searches from the window of these tabs: in the main window the schema or database of
+   * the node selected in the tree, else that of the window's active tab; empty for none.
+   */
+  Optional<FindScope> findScope(TabGroups.Group<Tab> group) {
+    if (group == tabs.main().active() && selected != null) {
+      var scope = switch (selected) {
+        case Node.OfSchema n -> n.schema();
+        case Node.OfDatabase n -> n.database();
+        case Node.OfTable n -> n.table().container();
+        case Node.OfColumn n -> n.column().table().container();
+        default -> null;
+      };
+      if (scope != null) {
+        return Optional.of(new FindScope(selected.id(), scope));
+      }
+    }
+    return switch (group.activeTab()) {
+      case TableTab x -> Optional.of(new FindScope(x.id, x.table.container()));
+      case FindTab x -> Optional.of(new FindScope(x.id, x.scope));
+      case null, default -> Optional.empty();
+    };
+  }
+
+  /**
+   * Opens a console on the database with a definition to read, the part from {@code start} up to
+   * {@code end} selected and the caret there, in a new tab of the window of these tabs; its text
+   * cannot be edited or run, and it is not kept.
+   */
+  void openDefinition(
+      UUID id, String database, String text, int start, int end, TabGroups.Group<Tab> into) {
+    if (profile(id) == null) {
+      return;
+    }
+    // Nothing of it runs: Auto, whatever mode new consoles start in.
+    var console = new ConsoleTab(id, database, ConsoleTab.Mode.AUTO);
+    console.text = text;
+    console.definition = true;
+    console.editor.readOnly(true).select(start, end);
+    tabs.add(into, into.tabs().size(), console);
+  }
+
+  /**
+   * Opens the table's rows filtered by the WHERE, or of a collection the Filter, in a new tab of
+   * the window of these tabs, or in its tab where one is open, in whichever window; the clause goes
+   * through the tab's own filter, which asks about pending edits first and keeps its ORDER BY or
+   * Sort.
+   */
+  void openWhere(UUID id, Table table, String where, TabGroups.Group<Tab> into) {
+    var open = tables(id).stream()
+        .filter(x ->
+            x.table.container().equals(table.container()) && x.table.name().equals(table.name()))
+        .findFirst();
+    var group = into;
+    TableTab tab;
+    if (open.isEmpty()) { // opened here filtered, never read without the filter first
+      tab = TableTab.of(this, id, table);
+      tabs.add(group, group.tabs().size(), tab);
+    } else {
+      tab = open.get();
+      group = tabs.groupOf(tab);
+      tabs.select(group, group.tabs().indexOf(tab));
+      var window = group.window() != null ? group.window() : app.windows().of(app);
+      if (window != null) {
+        window.raise();
+      }
+    }
+    Frame.focusContentSoon(this, group);
+    tab.applyWhere(this, where);
   }
 
   /** The server monitors of every window, of the connection or of all where it is null. */
@@ -1355,6 +1470,7 @@ final class State {
       }
     }
     all.addAll(monitors(id));
+    all.addAll(finds(id));
     close(all);
   }
 
@@ -1370,6 +1486,7 @@ final class State {
   void ended(UUID id) {
     tables(id).forEach(TableTab::stop);
     monitors(id).forEach(m -> m.end(this));
+    finds(id).forEach(f -> f.end(this));
   }
 
   /** The connection could not be connected: its consoles that waited for it say so. */
@@ -1410,6 +1527,12 @@ final class State {
     }
     var profile = profile(tab.id);
     return (profile == null ? "" : name(profile) + ": ") + tab.path();
+  }
+
+  /** A search's title: its connection's name and the schema or database it searches. */
+  String title(FindTab tab) {
+    var profile = profile(tab.id);
+    return (profile == null ? "" : name(profile) + ": ") + "Find in " + tab.place();
   }
 
   /** A server monitor's title: its connection's name. */
@@ -1635,6 +1758,7 @@ final class State {
     tables(null).forEach(TableTab::close);
     consoles(null).forEach(ConsoleTab::close);
     monitors(null).forEach(MonitorTab::close);
+    finds(null).forEach(FindTab::close);
     catalog.closeAll(); // nothing waits for a server
     for (Windows.Handle window : app.windows().all()) {
       window.close();

@@ -124,6 +124,7 @@ class PaletteTest {
             "File: New folder…",
             "File: New console",
             "File: Server monitor",
+            "File: Find…",
             "File: Settings…",
             "File: Close tab",
             "View: Command palette…",
@@ -146,6 +147,7 @@ class PaletteTest {
     assertTrue(line(open, "label=\"File: Close tab\"").contains("disabled"), open);
     assertTrue(line(open, "label=\"File: New console\"").contains("disabled"), open);
     assertTrue(line(open, "label=\"File: Server monitor\"").contains("disabled"), open);
+    assertTrue(line(open, "label=\"File: Find…\"").contains("disabled"), open);
     assertFalse(line(open, "label=\"View: Statement log\"").contains("disabled"), open);
     c.run(
         app,

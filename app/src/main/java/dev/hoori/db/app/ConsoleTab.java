@@ -320,6 +320,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   // session's; ask the session for its database after each run once that misleads.
   String database;
   String text = "";
+  boolean definition; // a definition to read: its text is not edited or run, and it is not kept
   final CodeEditor.State editor = new CodeEditor.State().inlineDiagnostics(true);
   final ConsoleEditor help = new ConsoleEditor(this); // the error's place, completions
   private final ResultsArea area = new ResultsArea(this);
@@ -725,6 +726,10 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
   /** The statements, with offsets from {@code from} in the text, run once the console takes them. */
   private void start(State s, int from, List<Statement> chosen) {
     s.acted();
+    if (definition) {
+      say(s, "A definition to read is not run");
+      return;
+    }
     if (busy() || preview != null || locked(s) != null) {
       return; // refused: what the run under way sent stays its own
     }

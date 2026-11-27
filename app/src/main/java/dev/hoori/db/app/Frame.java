@@ -203,6 +203,11 @@ final class Frame {
                 .icon(Symbol.SERVER)
                 .hue(ConnectionColors.hue(s.color(x.id)))
                 .busy(x.busy());
+          case FindTab x ->
+            new Tabs.Tab(s.title(x))
+                .icon(Symbol.SEARCH)
+                .hue(ConnectionColors.hue(s.color(x.id)))
+                .busy(x.busy());
         },
         tab -> switch (tab) {
           case null ->
@@ -217,6 +222,7 @@ final class Frame {
           case TableTab x -> x.view(s, app);
           case ConsoleTab x -> x.view(s, app);
           case MonitorTab x -> x.view(s, app);
+          case FindTab x -> x.view(s, app);
         });
   }
 
@@ -227,6 +233,7 @@ final class Frame {
       case TableTab x -> s.title(x);
       case ConsoleTab x -> s.title(x);
       case MonitorTab x -> s.title(x);
+      case FindTab x -> s.title(x);
     };
   }
 
@@ -687,6 +694,7 @@ final class Frame {
   static List<Menu.Item> menus(State s, TabGroups.Group<Tab> group, boolean modal) {
     var palette = s.palette(group);
     var console = s.consoleFor(group);
+    var find = s.findScope(group);
     // What opens a dialog of the main window waits for the one open there, from every window.
     boolean free = !mainDialog(s);
     Runnable close = group.activeTab() == null ? null : () -> s.closeTab(group);
@@ -713,6 +721,13 @@ final class Frame {
                         "Server monitor",
                         console == null ? null : () -> s.openMonitor(console, group))
                     .icon(Symbol.SERVER),
+                Menu.item(
+                        "Find…",
+                        find.isEmpty()
+                            ? null
+                            : () -> s.openFind(find.get().id(), find.get().scope(), group))
+                    .icon(Symbol.SEARCH)
+                    .shortcut(Key.CONTROL | Key.SHIFT, "F"),
                 Menu.item(
                         "History…",
                         !modal && group.activeTab() instanceof ConsoleTab c && c.id != null

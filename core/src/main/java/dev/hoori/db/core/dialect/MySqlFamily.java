@@ -9,6 +9,7 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -23,6 +24,7 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
 
   private final CatalogDialect catalog;
   private final ErrorDialect errors = new Errors();
+  private final FindDialect find = new Find();
 
   MySqlFamily(boolean flagsHiddenIndexColumns, boolean functionalIndexExpressions) {
     catalog = new Catalog(flagsHiddenIndexColumns, functionalIndexExpressions);
@@ -41,6 +43,11 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
   @Override
   public ErrorDialect errors() {
     return errors;
+  }
+
+  @Override
+  public FindDialect find() {
+    return find;
   }
 
   static final class Errors implements ErrorDialect {
@@ -590,6 +597,111 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
           MonitorRows.text(row, 8),
           MonitorRows.seconds(row, 9),
           waits ? stage : "");
+    }
+  }
+
+  // A database holds the tables itself: every query takes its name.
+  static final class Find implements FindDialect {
+
+    private static String of(Scope scope, String sql) {
+      if (scope != Scope.CONTAINER) {
+        throw new UnsupportedOperationException("No schemas");
+      }
+      return sql;
+    }
+
+    // MariaDB's sequences are tables to the server, as the catalog leaves them out.
+    // shortcut: TABLE_ROWS is InnoDB's sampled estimate, which may be stale or far off and which
+    // the rows of a table never show for that reason; it only guides the choice of tables here.
+    @Override
+    public String tables(Scope scope) {
+      return of(scope, """
+          SELECT TABLE_SCHEMA, TABLE_NAME,
+            CASE WHEN TABLE_TYPE IN ('VIEW', 'SYSTEM VIEW') THEN 'v' ELSE 'r' END,
+            TABLE_ROWS, DATA_LENGTH, FALSE
+          FROM information_schema.TABLES
+          WHERE TABLE_SCHEMA = ? AND TABLE_TYPE <> 'SEQUENCE'
+          ORDER BY TABLE_NAME""");
+    }
+
+    @Override
+    public String columns(Scope scope) {
+      return of(scope, """
+          SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, COLUMN_TYPE
+          FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = ?
+          ORDER BY TABLE_NAME, ORDINAL_POSITION""");
+    }
+
+    @Override
+    public String views(Scope scope) {
+      return of(scope, """
+          SELECT TABLE_SCHEMA, TABLE_NAME, VIEW_DEFINITION
+          FROM information_schema.VIEWS
+          WHERE TABLE_SCHEMA = ?
+          ORDER BY TABLE_NAME""");
+    }
+
+    @Override
+    public String routines(Scope scope) {
+      return of(scope, """
+          SELECT ROUTINE_SCHEMA, ROUTINE_NAME,
+            CASE WHEN ROUTINE_TYPE = 'PROCEDURE' THEN 'p' ELSE 'f' END, ROUTINE_DEFINITION
+          FROM information_schema.ROUTINES
+          WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE IN ('FUNCTION', 'PROCEDURE')
+          ORDER BY ROUTINE_NAME""");
+    }
+
+    @Override
+    public String triggers(Scope scope) {
+      return of(scope, """
+          SELECT TRIGGER_SCHEMA, EVENT_OBJECT_TABLE, TRIGGER_NAME, ACTION_STATEMENT
+          FROM information_schema.TRIGGERS
+          WHERE TRIGGER_SCHEMA = ?
+          ORDER BY EVENT_OBJECT_TABLE, TRIGGER_NAME""");
+    }
+
+    private static final Set<String> TEXTS =
+        Set.of("char", "varchar", "tinytext", "text", "mediumtext", "longtext", "enum", "set");
+    private static final Set<String> NUMBERS = Set.of(
+        "tinyint", "smallint", "mediumint", "int", "integer", "bigint", "decimal", "numeric");
+    private static final String FLOAT = "float";
+
+    // As COLUMN_TYPE writes it, with a length, the values of an enum or unsigned after the name.
+    @Override
+    public Holds holds(String type) {
+      int end = 0;
+      while (end < type.length() && Character.isLetter(type.charAt(end))) {
+        end++;
+      }
+      var base = type.substring(0, end).toLowerCase(Locale.ROOT);
+      if (TEXTS.contains(base)) {
+        return Holds.TEXT;
+      }
+      if (NUMBERS.contains(base)) {
+        return Holds.NUMBER;
+      }
+      return switch (base) {
+        case "double", "real" -> Holds.DOUBLE;
+        case FLOAT -> Holds.FLOAT;
+        default -> Holds.OTHER;
+      };
+    }
+
+    // A text column as it is, which the conditions convert to UTF-8 and compare by its bytes or
+    // its letters' lower case, not by its collation.
+    @Override
+    public String asText(String column, Holds holds) {
+      return holds == Holds.TEXT ? column : "CAST(" + column + " AS CHAR)";
+    }
+
+    // A float as one, which the number would be compared as a double with: MariaDB 10.4.5 and
+    // MySQL 8.0.17 cast to it.
+    @Override
+    public String equalNumber(String column, String type, String number) {
+      return holds(type) == Holds.FLOAT
+          ? column + " = CAST(" + number + " AS FLOAT)"
+          : column + " = " + number;
     }
   }
 }

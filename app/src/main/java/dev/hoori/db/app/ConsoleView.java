@@ -155,7 +155,7 @@ final class ConsoleView {
               PRIMARY,
               Filled.PLAY,
               "Run",
-              tab.firm() || locked != null ? null : () -> tab.run(s),
+              tab.definition || tab.firm() || locked != null ? null : () -> tab.run(s),
               Button.options()
                   // Off, not busy, while a change of its connection is saved or deleted.
                   .state(

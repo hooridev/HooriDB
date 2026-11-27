@@ -1,0 +1,153 @@
+package dev.hoori.db.core.find;
+
+import java.math.BigDecimal;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
+
+/**
+ * What is searched for: a text, how it matches, and whether case counts. In names and definitions
+ * HooriDB matches it itself, with a pattern as Java's regular expressions read it; in data the
+ * server does, with a pattern as its own read it, and with case or without whatever the
+ * collations of the columns say.
+ */
+public record Search(String text, Match match, boolean caseSensitive) {
+
+  /** How the text matches. */
+  public enum Match {
+    /** The text is in the value, anywhere. */
+    CONTAINS,
+    /** The value is the text, whole. */
+    EQUALS,
+    /** The text is a regular expression, found anywhere in the value. */
+    PATTERN
+  }
+
+  /** At most this many rows of a table count as hits, before a search there stops. */
+  public static final int LIMIT = 1_000;
+
+  /** Who matches a pattern: HooriDB, as Java's regular expressions read it, or the server. */
+  public enum Reader {
+    /** HooriDB, in names and definitions. */
+    HOORIDB,
+    /** The server, in data, which reports a pattern it cannot read. */
+    SERVER
+  }
+
+  /**
+   * @throws IllegalArgumentException where the text is empty
+   */
+  public Search {
+    Objects.requireNonNull(text, "text");
+    Objects.requireNonNull(match, "match");
+    if (text.isEmpty()) {
+      throw new IllegalArgumentException(EMPTY);
+    }
+  }
+
+  private static final String EMPTY = "Enter what to find.";
+
+  /**
+   * Why the text cannot be searched for so where the reader matches it, as a sentence; empty where
+   * it can.
+   */
+  public static Optional<String> problem(String text, Match match, Reader reader) {
+    if (text.isEmpty()) {
+      return Optional.of(EMPTY);
+    }
+    if (match == Match.PATTERN && reader == Reader.HOORIDB) {
+      try {
+        Pattern.compile(text);
+      } catch (PatternSyntaxException e) {
+        return Optional.of("The pattern is not valid: " + e.getDescription() + ".");
+      }
+    }
+    return Optional.empty();
+  }
+
+  /**
+   * The text as a pattern of Java's, which finds where it matches as {@link #match} says.
+   *
+   * @throws PatternSyntaxException where the text is a pattern that only a server can read
+   */
+  public Pattern pattern() {
+    var regex = switch (match) {
+      case CONTAINS -> Pattern.quote(text);
+      case EQUALS -> "\\A" + Pattern.quote(text) + "\\z";
+      case PATTERN -> text;
+    };
+    return Pattern.compile(
+        regex, caseSensitive ? 0 : Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+  }
+
+  /**
+   * The search with its pattern compiled once, for the many texts of one search.
+   *
+   * @throws PatternSyntaxException as {@link #pattern} does
+   */
+  public Compiled compiled() {
+    return new Compiled(pattern());
+  }
+
+  /** A search's pattern, which finds where it is in a text. */
+  public record Compiled(Pattern pattern) {
+
+    /** Where it is found first in the text, or empty where it is not or there is none. */
+    public Optional<Place> in(String value) {
+      if (value == null) {
+        return Optional.empty();
+      }
+      Matcher m = pattern.matcher(value);
+      return m.find() ? Optional.of(new Place(m.start(), m.end())) : Optional.empty();
+    }
+  }
+
+  /** A part of a text, from its start up to its end. */
+  public record Place(int start, int end) {}
+
+  /**
+   * The text as a number, where it is one and the match is not a pattern: the number columns hold
+   * then, which they are searched for as equal to.
+   */
+  public Optional<BigDecimal> number() {
+    if (match == Match.PATTERN) {
+      return Optional.empty();
+    }
+    var trimmed = text.strip();
+    if (trimmed.isEmpty() || !trimmed.matches("[-+]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][-+]?\\d+)?")) {
+      return Optional.empty();
+    }
+    try {
+      return Optional.of(new BigDecimal(trimmed));
+    } catch (NumberFormatException _) {
+      return Optional.empty();
+    }
+  }
+
+  /**
+   * Whether a double is the number: one whose shortest decimal it is, as of 0.1, so that a number
+   * such as 1E400 or 1E-400 is none, and neither is one that only rounds to a double.
+   */
+  static boolean isDouble(BigDecimal number) {
+    double d = number.doubleValue();
+    return Double.isFinite(d) && BigDecimal.valueOf(d).compareTo(number) == 0;
+  }
+
+  // The most digits before the point and after it of an exact number in a column of a server's:
+  // of PostgreSQL's numeric, the widest, which refuses or misreads a number given with more.
+  private static final int EXACT_DIGITS = 131_072;
+  private static final int EXACT_SCALE = 16_383;
+
+  /** Whether a column of exact numbers can hold the number, as 1E-20000 none can. */
+  static boolean isExact(BigDecimal number) {
+    return number.scale() <= EXACT_SCALE && number.precision() - number.scale() <= EXACT_DIGITS;
+  }
+
+  /** Whether a float is the number, as {@link #isDouble} says of a double. */
+  static boolean isFloat(BigDecimal number) {
+    float f = number.floatValue();
+    return Float.isFinite(f) && new BigDecimal(Float.toString(f)).compareTo(number) == 0;
+  }
+}

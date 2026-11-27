@@ -13,6 +13,7 @@ import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -345,7 +346,7 @@ abstract class MySqlFamilyRows extends RowsDialect {
   // or, where it should count, case alike.
   private String bytes(String column, String value, boolean lower) {
     var left = utf8(column);
-    var right = utf8(literal(value));
+    var right = utf8Text(value);
     return lower
         ? bytes("LOWER(" + left + ")") + " = " + bytes("LOWER(" + right + ")")
         : bytes(left) + " = " + bytes(right);
@@ -353,8 +354,13 @@ abstract class MySqlFamilyRows extends RowsDialect {
 
   @Override
   String like(String column, Field field, String pattern) {
-    return "LOWER(" + utf8(column) + ") LIKE LOWER(" + utf8(literal(pattern))
+    return "LOWER(" + utf8(column) + ") LIKE LOWER(" + utf8Text(pattern)
         + ") COLLATE utf8mb4_bin ESCAPE '!'";
+  }
+
+  @Override
+  String likeExactly(String column, Field field, String pattern) {
+    return utf8(column) + " LIKE " + utf8Text(pattern) + " COLLATE utf8mb4_bin ESCAPE '!'";
   }
 
   @Override
@@ -369,7 +375,29 @@ abstract class MySqlFamilyRows extends RowsDialect {
 
   @Override
   String matches(String column, Field field, String expression) {
-    return utf8(column) + " REGEXP " + literal("(?i)" + expression);
+    return utf8(column) + " REGEXP " + text("(?i)" + expression);
+  }
+
+  // By a binary collation, which no collation of the column's makes case-insensitive.
+  @Override
+  String matchesExactly(String column, Field field, String expression) {
+    return utf8(column) + " COLLATE utf8mb4_bin REGEXP " + text(expression);
+  }
+
+  // A text that the conditions compare with, read alike whatever the SQL mode says: with a
+  // backslash, which NO_BACKSLASH_ESCAPES takes as itself and otherwise escapes, as its UTF-8
+  // bytes in hexadecimal, read as text in utf8mb4.
+  private String text(String value) {
+    return value.indexOf('\\') < 0 ? literal(value) : utf8(hex(value));
+  }
+
+  // The text in utf8mb4, as text() reads it.
+  private String utf8Text(String value) {
+    return utf8(value.indexOf('\\') < 0 ? literal(value) : hex(value));
+  }
+
+  private static String hex(String value) {
+    return "X'" + HexFormat.of().formatHex(value.getBytes(StandardCharsets.UTF_8)) + "'";
   }
 
   // A moment as the seconds it stores, as unchanged() compares it: MariaDB reads no offset in a

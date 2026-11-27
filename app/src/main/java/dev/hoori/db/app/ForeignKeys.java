@@ -258,35 +258,10 @@ final class ForeignKeys {
     return values;
   }
 
-  /**
-   * Opens {@code target} (reusing its open tab if any, in whichever window) and applies {@code
-   * where} through the tab's normal filter path, asking about pending edits first and keeping its
-   * {@code ORDER BY}.
-   */
+  // The related table in the source's window, or where its tab is open.
   private static void follow(State s, TableTab source, Table target, String where) {
-    var open = s.tables(source.id).stream()
-        .filter(x ->
-            x.table.container().equals(target.container()) && x.table.name().equals(target.name()))
-        .findFirst();
     var group = s.tabs.groupOf(source);
-    if (group == null) {
-      group = s.tabs.main().active();
-    }
-    TableTab tab;
-    if (open.isEmpty()) { // opened here filtered, never read without the filter first
-      tab = TableTab.of(s, source.id, target);
-      s.tabs.add(group, group.tabs().size(), tab);
-    } else {
-      tab = open.get();
-      group = s.tabs.groupOf(tab);
-      s.tabs.select(group, group.tabs().indexOf(tab));
-      var window = group.window() != null ? group.window() : s.app.windows().of(s.app);
-      if (window != null) {
-        window.raise();
-      }
-    }
-    Frame.focusContentSoon(s, group);
-    tab.applyWhere(s, where);
+    s.openWhere(source.id, target, where, group == null ? s.tabs.main().active() : group);
   }
 
   static String otherTable(Table self, Table other) {

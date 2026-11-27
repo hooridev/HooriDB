@@ -12,6 +12,7 @@ import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Index;
@@ -476,6 +477,7 @@ final class CatalogTree {
         result -> {
           if (live.levels.get(node) == reading) {
             onRead.accept(result);
+            revealed(s);
           }
         },
         error -> {
@@ -840,6 +842,18 @@ final class CatalogTree {
    * runs on it never holds up the tree or a table tab.
    */
   Session session(State s, UUID id, String database) {
+    return session(s, id, database, false);
+  }
+
+  /**
+   * As {@link #session(State, UUID, String)}, for a search: read-only at a server of SQL from its
+   * opening, as the tree's, so that reading a view whose functions write changes nothing.
+   */
+  Session browsingSession(State s, UUID id, String database) {
+    return session(s, id, database, true);
+  }
+
+  private Session session(State s, UUID id, String database, boolean browsing) {
     var live = lives.get(id);
     if (live == null || !(live.phase instanceof Live.Connected)) {
       return null;
@@ -847,6 +861,9 @@ final class CatalogTree {
     // A console finds a lost connection in what its statements give, not through the tree.
     var lane = new Lane(e -> {});
     var profile = database.isEmpty() ? live.profile : live.profile.withDatabase(database);
+    if (browsing) {
+      profile = browsing(profile);
+    }
     lane.open(servers, profile, live.password, live.driver, s.settings.connectTimeout());
     return new Session(lane, live.driver, live.password.clone());
   }
@@ -1596,6 +1613,8 @@ final class CatalogTree {
             Menu.item("Open", () -> s.openTable(n.id(), n.table())).icon(Symbol.TABLE),
             refresh,
             copy);
+      case Node.OfDatabase(var id, var database) -> List.of(find(s, id, database), refresh, copy);
+      case Node.OfSchema(var id, var schema) -> List.of(find(s, id, schema), refresh, copy);
       case Node.ForeignKeys(var id, var table) ->
         List.of(Menu.item(
                 "Refresh", connected ? () -> refresh(s, new Node.OfTable(id, table)) : null)
@@ -1612,6 +1631,115 @@ final class CatalogTree {
       case Node.OfIndex _ -> List.of(copy);
       default -> List.of(refresh, copy);
     };
+  }
+
+  /** Find…: a search of the schema or database, in the main window. */
+  private static Menu.Item find(State s, UUID id, Container scope) {
+    return Menu.item("Find…", () -> s.openFind(id, scope, s.tabs.main().active()))
+        .icon(Symbol.SEARCH);
+  }
+
+  /**
+   * Selects the table or view in the tree, opening the folders and nodes above it and reading what
+   * they hold where it is not read yet, or anew where what was read lacks it, as a table made
+   * since; with a column, the column once the table's columns are read, and with the path of a
+   * document's field the field it is in that the tree shows.
+   */
+  void reveal(State s, Node.OfTable node, String column) {
+    var live = lives.get(node.id());
+    if (live == null || !(live.phase instanceof Live.Connected)) {
+      return;
+    }
+    for (var folder : s.workspace().path(node.id())) {
+      s.openFolder(folder.id(), true);
+    }
+    var above = new ArrayList<Node>();
+    for (Node n = node.parent(); n != null; n = n.parent()) {
+      above.addFirst(n);
+    }
+    for (var n : above) {
+      if (!open.contains(n)) {
+        toggle(s, n, true);
+      }
+    }
+    var parent = node.parent();
+    if (live.levels.get(parent) instanceof Read(var siblings) && shown(siblings, node) == null) {
+      refresh(s, parent);
+    }
+    s.selected = node;
+    revealing = new Revealing(node, column);
+    revealed(s);
+  }
+
+  // The table or view to select, and the column in it or null, once what holds them is read.
+  private Revealing revealing;
+
+  private record Revealing(Node.OfTable table, String column) {}
+
+  // The tree's node of the table among the nodes, by its container and name; null where none is.
+  private static Node.OfTable shown(List<Node> nodes, Node.OfTable table) {
+    for (var n : nodes) {
+      if (n instanceof Node.OfTable t
+          && t.table().container().equals(table.table().container())
+          && t.table().name().equals(table.table().name())) {
+        return t;
+      }
+    }
+    return null;
+  }
+
+  // A level was read: the table waited for is selected once its own level is, and then its
+  // column once its columns are, if the user did not go elsewhere meanwhile.
+  private void revealed(State s) {
+    var wanted = revealing;
+    if (wanted == null) {
+      return;
+    }
+    var live = lives.get(wanted.table().id());
+    if (live == null || !wanted.table().equals(s.selected)) {
+      revealing = null;
+      return;
+    }
+    if (!(live.levels.get(wanted.table().parent()) instanceof Read(var siblings))) {
+      return; // still read
+    }
+    var table = shown(siblings, wanted.table());
+    if (table == null) {
+      revealing = null; // gone
+      return;
+    }
+    s.selected = table;
+    if (wanted.column() == null) {
+      revealing = null;
+      return;
+    }
+    revealing = new Revealing(table, wanted.column());
+    if (!open.contains(table)) {
+      toggle(s, table, true);
+    }
+    if (!(live.levels.get(table) instanceof Read(var children))) {
+      return; // its columns still read
+    }
+    revealing = null;
+    var column = column(children, wanted.column());
+    if (column != null) {
+      s.selected = column;
+    }
+  }
+
+  // The column of the name, or for the path of a document's field, as address.city, the deepest
+  // field of it that the tree shows; null where none is.
+  private static Node column(List<Node> children, String name) {
+    for (var path = name; ; path = path.substring(0, path.lastIndexOf('.'))) {
+      for (var child : children) {
+        if (child instanceof Node.OfColumn c && c.column().name().equals(path)) {
+          return c;
+        }
+      }
+      if (path.lastIndexOf('.') < 0) {
+        return null;
+      }
+    }
   }
 
   /**

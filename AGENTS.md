@@ -107,12 +107,12 @@ from and clears; Save to workspace saves a console's selection, or else its whol
 in its connection's folder in `workspace.json`. The
 statement log, a panel below the tabs that starts collapsed and that the status line, the View menu
 and the palette open, lists what every connection sent, from the tree, a table's grid, the
-estimates, the transactions, the consoles and the server monitor's cancels and ends, with its time,
-connection, part, duration and outcome, and the chosen statement whole in its dialect's colors; it
-filters by connection, part and outcome, searches, copies a statement, clears, and can be turned
-off. A password in a statement or a MongoDB command is masked before it is logged, and the log is
-kept beside the workspace (`statement-log.jsonl`, up to 8 MB and one older file, owner-only),
-written in batches. A connection to MongoDB goes through its Java driver, downloaded as the JDBC
+estimates, the transactions, the consoles, the searches and the server monitor's cancels and
+ends, with its time, connection, part, duration and outcome, and the chosen statement whole in its
+dialect's colors; it filters by connection, part and outcome, searches, copies a statement, clears,
+and can be turned off. A password in a statement or a MongoDB command is masked before it is
+logged, and the log is kept beside the workspace (`statement-log.jsonl`, up to 8 MB and one older
+file, owner-only), written in batches. A connection to MongoDB goes through its Java driver, downloaded as the JDBC
 drivers are, with its parts beside it, and through a bridge of core's that is loaded beside the
 driver; its host may name a DNS SRV record that lists the servers, as `mongodb+srv://` does, with TLS on by default and no
 port; its user may be defined in a database other than `admin`, which it names (`authSource`); pasting a `mongodb://` or `mongodb+srv://` connection string into the connection dialog's Host field switches to MongoDB and fills its fields (keeping the password in the password field alone, naming unused options and further hosts in a note, and reporting an invalid string without echoing credentials); it
@@ -142,7 +142,25 @@ connection's menu, the File menu or the palette, opens a tab with the server's s
 status counters and who blocks whom, read on a session of its own at an interval that can be
 changed and paused, and not while the tab is hidden; a session's statement is cancelled and a
 session ended after a question, never the monitor's own, and credentials in other sessions'
-statements are masked. Run from its app image,
+statements are masked. "Find…", in a database's or schema's menu, the File menu (Control+Shift+F)
+or the palette, opens a tab that searches it on a session of its own, read-only at a server of SQL
+as the tree's, as contains, equals or a pattern, Java's or, in data, the server's, case sensitive
+or not: in its objects, the names of its tables, views and columns, read anew for the search, and
+of its routines and triggers, and the texts of its views, routines and triggers, of which opening
+one selects it in the tree, reading anew what lacks it, or shows its definition, read-only, at the
+match in a console that neither runs it, nor is kept, nor takes Open in console; or in its data,
+whose tables it lists first with the server's estimates of their rows and size, a partition within
+its table, the views not chosen, and then searches one after another, in one query each over the
+columns that can hold the value, text for a text by the conditions of a table's filters, numbers for
+a number, compared in the column's type, and the others as their text where chosen, with its
+progress and a cancel, counting at most 1,000 matching rows of a table, which shows as "1,000+";
+opening a column's hits opens its table's tab with the condition that counted them in WHERE, or a
+collection's in Filter, as a foreign key's rows open. On MongoDB it finds the collections and the
+fields of a sample of their documents by name, a collection the user may not read by its name
+alone, and their values by `$regex` over the string fields, nested ones included, or equality for
+a number, which the server counts in one aggregation, also on a read-only connection; a name with
+a dot or starting with `$` is no field of it. A session of a search or a server monitor that fails
+to close says so in the notices. Run from its app image,
 HooriDB looks for a newer GitHub release at each start, in the channel Settings chooses, Stable or
 Nightly (at first that of its own version), downloads it, shows its highlights and change count in a
 tooltip while its notice is hovered, and restarts into it through its own Exit when asked; the new
@@ -384,6 +402,17 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   `locks` give what a host's server has, besides the monitor's own session, numbered as its link;
   the reads are keyed `sessions <host>`, `variables <host>`, `status <host>` and `locks <host>`,
   a cancel `cancel <host> <operation>` and an end `end <host> <id>`.
+- So do Find's: a search of objects, keyed `objects <host>/<path>` with the path of its schema or
+  database, finds the outline's tables, views and columns by name, and the routines, triggers and
+  views' texts that `defined` gives, a view by its text alone; the tables to search are keyed
+  `candidates <host>/<path>`, with the estimates of `rows`, and a table's search
+  `search <host>/<path>`, over its rows as `read` makes them up or `values` gives them;
+  `failsAtClose` makes closing a host's connection fail. Core's
+  `FinderServerTest` searches the servers of SQL in a schema or database of its own, where MariaDB
+  and MySQL have root make the trigger, which the binary log asks SUPER for, and the user the
+  routine, whose text the server shows its definer alone, and a text with a backslash under
+  either escape mode; `DocumentFinderServerTest` searches MongoDB's sample and collections of its
+  own on a read-only session, also as a user it makes who may read one collection alone.
 - Updates run against `FakeUpdater`: releases published by version, the helper's result given,
   downloads and restarts recorded, each failable and the download held at its gate `downloading`.
   `State.shown()`, which `main` hands the window's `onShown`, stands for the first frame shown,

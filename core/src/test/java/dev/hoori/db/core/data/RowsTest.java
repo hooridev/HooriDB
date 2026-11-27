@@ -303,9 +303,10 @@ class RowsTest {
           List.of(new ColumnFilter(
               tick, new ColumnFilter.Text(ColumnFilter.Match.CONTAINS, "50%_!\\x"))),
           berlin);
+      // A text with a backslash as its UTF-8 bytes, read alike with NO_BACKSLASH_ESCAPES or not.
       assertEquals(
-          "LOWER(CONVERT(`na``me` USING utf8mb4)) LIKE LOWER(CONVERT('%50!%!_!!\\\\x%' USING"
-              + " utf8mb4)) COLLATE utf8mb4_bin ESCAPE '!'",
+          "LOWER(CONVERT(`na``me` USING utf8mb4)) LIKE LOWER(CONVERT(X'2535302125215f21215c7825'"
+              + " USING utf8mb4)) COLLATE utf8mb4_bin ESCAPE '!'",
           like);
       Rows.check(provider, new Rows.Filter(like, ""), true);
 

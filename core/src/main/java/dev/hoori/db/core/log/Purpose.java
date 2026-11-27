@@ -21,5 +21,7 @@ public enum Purpose {
   /** The database the session is on. */
   SESSION,
   /** The server monitor's cancel of a statement and end of a session. */
-  MONITOR
+  MONITOR,
+  /** A search of the objects or the data of a database or schema. */
+  SEARCH
 }
