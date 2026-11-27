@@ -20,9 +20,9 @@ You can export the rows of tables and views on PostgreSQL, MySQL and MariaDB to 
 5. Press **Choose…** beside **Folder** and pick the folder for the files.
 6. Press **Export**.
 
-Each table goes into a file of its own, named after the table: `orders.csv`, `orders.tsv`, `orders.json` or `orders.jsonl`. Characters that file systems refuse become `_`, and dots and spaces at the end of a name, which Windows drops, are left out. Two names that differ only in case get a number, such as `Orders-2.csv`.
+Each table goes into a file of its own, named after the table: `orders.csv`, `orders.tsv`, `orders.json` or `orders.jsonl`. Characters that file systems refuse become `_`, and dots and spaces at the end of a name, which Windows drops, are left out. A name that Windows keeps for a device, also before a dot, gets a `_` after that part, such as `NUL_.csv` and `NUL_.backup.csv`. Two names that differ only in case get a number, such as `Orders-2.csv`.
 
-A file of the same name is replaced only once the new file is complete. If an export fails or you cancel it, the folder stays as it was, and no partial file is left behind. The file gets the permissions the system gives any new file you make there.
+A file of the same name is replaced only once the new file is complete, in one step. If a table's export fails or you cancel it, its file stays as it was, and no partial file is left behind. A folder whose file system cannot replace a file in one step fails the export the same way. The file gets the permissions the system gives any new file you make there.
 
 ### Options for CSV and TSV
 
@@ -55,14 +55,14 @@ The export runs on its own session, which is read-only at the server. It never u
 
 Each table is read with one statement whose rows are streamed from the server and written to the file as they arrive, so a large table is never held in memory. The dialog shows which table is being written and how many rows so far.
 
-**Cancel** stops the table being written and skips the remaining tables. Tables that were already written keep their files.
+**Cancel** stops the table being written, whose file stays as it was, and skips the remaining tables. Tables that were already written keep their new files: a file that one of them replaced is not put back.
 
 ## Import a file into a table
 
 1. Right-click a table in Workspace and choose **Import data…**. You can also select a table, or open its tab, and choose **File > Import data…**.
 2. Press **Choose…** beside **File** and pick a CSV, TSV or text file. A `.tsv` file sets the delimiter to Tab.
 3. Set **Delimiter**, **Header**, **Quote**, **Encoding** and **NULL as** to match the file. The preview below shows its first 20 rows as these options read them, and updates as you change them.
-4. Under **Columns of** the table, choose which column of the file goes into each table column. When the file has a header, columns are matched by name, ignoring case. Otherwise they are matched by position. **Not imported** leaves a column to its default.
+4. Under **Columns of** the table, choose which column of the file goes into each table column. When the file has a header, columns are matched by name: a header of the column's exact name first, and else one that differs only in case, where it is the only such header and names no other column. Otherwise they are matched by position. **Not imported** leaves a column to its default.
 5. Choose how rows are written:
    - **Before**: **Keep its rows** adds to the table. **Empty the table first** deletes all its rows in the same transaction as the first rows written.
    - **Transaction**: **All rows or none** writes everything in one transaction. **Commit each batch** commits after each batch, so rows that were committed stay if the import stops or you cancel it.
@@ -79,13 +79,13 @@ While a changed option is read into the preview, **Import** waits for it, so tha
 - A quoted value may contain the delimiter, line breaks, and the quote character doubled.
 - Lines can end in LF, CRLF or CR. Empty lines are skipped, except in a file of one column: there an empty line is a row whose value is empty, which is NULL when **NULL as** is empty, as HooriDB writes a NULL of such a file. Empty lines before the header are skipped there too.
 - An unquoted value equal to **NULL as** is NULL. A quoted value is always text, so `""` is an empty text even when **NULL as** is empty.
-- A byte order mark at the start of the file is skipped.
+- A byte order mark at the start of the file is skipped. HooriDB quotes a value that starts with one, so that it is read back whole.
 - If the file has bytes that are not valid in the chosen encoding, the preview and the import say so.
 - A row with a different number of values than the header (or the first row, without a header) cannot be imported. It stops the import or is skipped.
 
 Values go to the server as text, which the server converts to the column's type. These are converted first:
 
-- A moment with an offset, such as `2024-03-31T02:30:00+02:00`, is stored as that moment.
+- A moment with an offset, such as `2024-03-31T02:30:00+02:00`, is stored as that moment. MySQL takes a moment through the session's time zone, so a moment in an hour that the zone shows twice, as when the clocks go back, could be stored as the other one: such a row fails instead, with the reason.
 - A date and time may use `T` or a space between them.
 - A boolean may be `true`, `false`, `t`, `f`, `1`, `0`, `yes` or `no`.
 - Binary data is read as hexadecimal, with or without a leading `\x` or `0x`.
