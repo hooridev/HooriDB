@@ -24,6 +24,7 @@ import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.NumberField;
 import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Radio;
+import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.catalog.Container;
@@ -126,6 +127,36 @@ final class ExportDialog {
     this.provider = provider;
     this.lane = lane;
     this.password = password;
+  }
+
+  /** What Export to SQL is opened on: a connection's database or schema. */
+  record Of(UUID id, Container container) {}
+
+  /**
+   * What Export to SQL of the File menu exports: in the main window the database or schema of the
+   * node selected in the tree, else that of the window's table tab; null for none, as for a
+   * connection, a server of documents, or one not connected.
+   */
+  static Of of(State s, TabGroups.Group<Tab> group) {
+    Of found = null;
+    // The schema or database that holds the node, however deep under it.
+    for (var node = group == s.tabs.main().active() ? s.selected : null;
+        node != null && found == null;
+        node = node.parent()) {
+      found = switch (node) {
+        case Node.OfSchema(var id, var schema) -> new Of(id, schema);
+        case Node.OfDatabase(var id, var database) -> new Of(id, database);
+        default -> null;
+      };
+    }
+    if (found == null && group.activeTab() instanceof TableTab x) {
+      found = new Of(x.id, x.table.container());
+    }
+    if (found == null || !s.catalog.connected(found.id())) {
+      return null;
+    }
+    var profile = s.profile(found.id());
+    return profile == null || profile.provider().keepsDocuments() ? null : found;
   }
 
   /**

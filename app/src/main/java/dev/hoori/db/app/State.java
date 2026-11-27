@@ -10,7 +10,6 @@ import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.window.SystemAppearance;
 import com.rethinkj.ui.window.Window;
 import com.rethinkj.ui.window.Windows;
-import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
@@ -1219,36 +1218,6 @@ final class State {
       case ConsoleTab x -> x.id;
       case MonitorTab x -> x.id;
     };
-  }
-
-  /** What Export to SQL is opened on: a connection's database or schema. */
-  record Exported(UUID id, Container container) {}
-
-  /**
-   * What Export to SQL of the File menu exports: in the main window the database or schema of the
-   * node selected in the tree, else that of the window's table tab; null for none, as for a
-   * connection, a server of documents, or one not connected.
-   */
-  Exported exportFor(TabGroups.Group<Tab> group) {
-    Exported found = null;
-    // The schema or database that holds the node, however deep under it.
-    for (var node = group == tabs.main().active() ? selected : null;
-        node != null && found == null;
-        node = node.parent()) {
-      found = switch (node) {
-        case Node.OfSchema(var id, var schema) -> new Exported(id, schema);
-        case Node.OfDatabase(var id, var database) -> new Exported(id, database);
-        default -> null;
-      };
-    }
-    if (found == null && group.activeTab() instanceof TableTab x) {
-      found = new Exported(x.id, x.table.container());
-    }
-    if (found == null || !catalog.connected(found.id())) {
-      return null;
-    }
-    var profile = profile(found.id());
-    return profile == null || profile.provider().keepsDocuments() ? null : found;
   }
 
   /**
