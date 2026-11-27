@@ -107,10 +107,16 @@ class PairingTest {
     var target = List.of(column(TARGET, "id", "int", 0), column(TARGET, "other", "int", 1));
     var found = Pairing.of(SOURCE, source, List.of(), TARGET, target, List.of());
     assertInstanceOf(Pairing.Unpaired.class, found);
-    var same = Pairing.of(SOURCE, source, List.of(), SOURCE, source, List.of());
-    assertEquals(
-        "The source and the target are the same table.",
-        assertInstanceOf(Pairing.Unpaired.class, same).why());
+  }
+
+  // As a copy of a table on another server has the same database, schema and name.
+  @Test
+  void tablesOfTheSameNamePair() {
+    var columns = List.of(column(SOURCE, "id", "int", 1), column(SOURCE, "name", "text", 0));
+    var found = Pairing.of(SOURCE, columns, List.of(), SOURCE, columns, List.of());
+    var pairing = assertInstanceOf(Pairing.Paired.class, found).pairing();
+    assertEquals(Pairing.PRIMARY_KEY, pairing.keyName());
+    assertEquals(List.of(new Pairing.Pair(0, 0), new Pairing.Pair(1, 1)), pairing.columns());
   }
 
   @Test

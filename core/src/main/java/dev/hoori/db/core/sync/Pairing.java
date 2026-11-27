@@ -73,8 +73,9 @@ public record Pairing(
   public record Unpaired(String why) implements Found {}
 
   /**
-   * How the rows of the tables are compared, or why they cannot be: they are the same table, or
-   * share no key whose values name each row once.
+   * How the rows of the tables are compared, or why they cannot be: they share no key whose values
+   * name each row once. Tables of the same name may be of two servers, which a table does not tell,
+   * so whoever chooses them sees to it that they are not the same one.
    *
    * @param sourceIndexes the source's indexes, as the catalog reads them
    * @param targetIndexes the target's indexes
@@ -86,9 +87,6 @@ public record Pairing(
       Table target,
       List<Column> targetColumns,
       List<Index> targetIndexes) {
-    if (source.equals(target)) {
-      return new Unpaired("The source and the target are the same table.");
-    }
     var targets = new LinkedHashMap<String, Integer>();
     for (int i = 0; i < targetColumns.size(); i++) {
       targets.put(targetColumns.get(i).name(), i);
