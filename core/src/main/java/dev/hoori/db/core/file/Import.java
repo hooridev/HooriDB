@@ -50,8 +50,13 @@ public final class Import {
         var first = reader.next();
         header = first == null ? List.of() : named(first.values());
       }
+      // Not a row more, which could fail the preview of those before it.
       var read = new ArrayList<List<String>>();
-      for (var row = reader.next(); row != null && read.size() < rows; row = reader.next()) {
+      while (read.size() < rows) {
+        var row = reader.next();
+        if (row == null) {
+          break;
+        }
         read.add(row.values());
       }
       var widest = read.stream().mapToInt(List::size).max().orElse(0);

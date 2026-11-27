@@ -2,8 +2,10 @@ package dev.hoori.db.core.file;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import dev.hoori.db.core.data.Inserts;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -30,6 +32,17 @@ class ImportTest {
     assertEquals(List.of("Column 1", "Column 2"), plain.names());
     assertEquals(5, plain.rows().size());
     assertEquals(List.of("3", "Bo; b"), plain.rows().get(3));
+  }
+
+  @Test
+  void readsNoRowPastThoseItPreviews() throws Exception {
+    var file = dir.resolve("people.csv");
+    // The quoted value of line 4 does not end, which the rows before it do not show.
+    Files.writeString(file, "id,name\n1,Ann\n2,Bo\n3,\"Cy\n");
+    var preview = Import.preview(file, Format.Delimited.CSV, 2);
+    assertEquals(List.of(List.of("1", "Ann"), List.of("2", "Bo")), preview.rows());
+    assertEquals(List.of(), Import.preview(file, Format.Delimited.CSV, 0).rows());
+    assertThrows(IOException.class, () -> Import.preview(file, Format.Delimited.CSV, 3));
   }
 
   @Test
