@@ -707,6 +707,8 @@ class DumpServerTest {
         "CREATE TABLE child (id serial PRIMARY KEY, parent_id integer NOT NULL"
             + " REFERENCES parent (id), note text, CONSTRAINT short CHECK (length(note) < 100))",
         "ALTER TABLE parent ADD CONSTRAINT parent_child FOREIGN KEY (child_id) REFERENCES child (id)",
+        // A table that uses the sequence another owns, which a drop of its owner would take along.
+        "CREATE TABLE borrower (id integer DEFAULT nextval('child_id_seq'))",
         "CREATE INDEX parent_name ON parent (lower(name))",
         "COMMENT ON TABLE parent IS 'The parents'' table'",
         "COMMENT ON COLUMN parent.name IS 'Its name'",

@@ -16,8 +16,8 @@ import java.util.Set;
  *     DELIMITER}
  * @param indexes a table's or materialized view's indexes that no constraint makes
  * @param keys a table's foreign keys
- * @param dropKeys what drops its foreign keys where they exist, so that the tables they join can go
- *     in any order
+ * @param dropKeys what drops its foreign keys, or a sequence's owner, where they exist, so that the
+ *     tables they join can go in any order
  * @param drop what drops it where it exists
  * @param restore what gives it, after the rows, the state it has besides them: a sequence's value,
  *     that of a table's identity column; a populated materialized view's refresh, from its tables'

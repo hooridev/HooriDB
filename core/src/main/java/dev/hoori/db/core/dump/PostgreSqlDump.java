@@ -887,7 +887,8 @@ public final class PostgreSqlDump extends DumpDialect {
           false,
           List.of(),
           List.of(),
-          List.of(),
+          // Its owner's drop would take it along, from tables whose defaults still use it.
+          List.of("ALTER SEQUENCE IF EXISTS " + name + " OWNED BY NONE"),
           "DROP SEQUENCE IF EXISTS " + name,
           List.of(value(name)),
           List.of(),
