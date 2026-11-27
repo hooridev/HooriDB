@@ -1261,18 +1261,20 @@ final class State {
    * connection, a server of documents, or one not connected.
    */
   Exported exportFor(TabGroups.Group<Tab> group) {
-    var node = group == tabs.main().active() ? selected : null;
-    if (node instanceof Node.Problem(var of)) {
-      node = of;
+    Exported found = null;
+    // The schema or database that holds the node, however deep under it.
+    for (var node = group == tabs.main().active() ? selected : null;
+        node != null && found == null;
+        node = node.parent()) {
+      found = switch (node) {
+        case Node.OfSchema(var id, var schema) -> new Exported(id, schema);
+        case Node.OfDatabase(var id, var database) -> new Exported(id, database);
+        default -> null;
+      };
     }
-    Exported found = switch (node) {
-      case Node.OfDatabase(var id, var database) -> new Exported(id, database);
-      case Node.OfSchema(var id, var schema) -> new Exported(id, schema);
-      case Node.OfTable(var id, var table) -> new Exported(id, table.container());
-      case Node.OfColumn(var id, var column) -> new Exported(id, column.table().container());
-      case null, default ->
-        group.activeTab() instanceof TableTab x ? new Exported(x.id, x.table.container()) : null;
-    };
+    if (found == null && group.activeTab() instanceof TableTab x) {
+      found = new Exported(x.id, x.table.container());
+    }
     if (found == null || !catalog.connected(found.id())) {
       return null;
     }

@@ -16,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.rethinkj.ui.App;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Schema;
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.dump.Dump;
 import dev.hoori.db.core.dump.Item;
 import dev.hoori.db.core.dump.Listed;
@@ -247,6 +248,32 @@ class ExportDialogTest {
     assertEquals("shop-prod", notice.connection());
     assertTrue(notice.what().contains("Closing the export's session failed: it did not end"));
     assertTrue(notice.failure());
+  }
+
+  @Test
+  void theFileMenuExportsTheSchemaOfAnyNodeUnderIt() throws Exception {
+    c.servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogTreeTest.INDEX_OUTLINE);
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    c.run(
+        app,
+        START
+            + open("shop-prod")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("public")
+            + SETTLE
+            + open("orders")
+            + SETTLE
+            + open("Indexes")
+            + SETTLE);
+    c.run(
+        app,
+        "press role=treeitem label=\"orders_pkey\"\nframe\n"
+            + "press role=menuitem label=\"File\"\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Export to SQL…\"\nframe\n" + SETTLE + "snap index\n");
+    assertTrue(c.tree("index").contains("\"Export shop.public to SQL\""), c.tree("index"));
   }
 
   @Test
