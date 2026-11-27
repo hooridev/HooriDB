@@ -83,7 +83,7 @@ public final class StatementReader implements Closeable {
   private final Provider provider;
   private final long size;
   private final int windowSize;
-  private final int longest;
+  private final int limit; // the most chars of one step
   private final StringBuilder buffer = new StringBuilder();
   // What was taken of the buffer, and the line and offset there.
   private int at;
@@ -116,12 +116,12 @@ public final class StatementReader implements Closeable {
   }
 
   // With a step's text at most the chars given long, as a test makes it short.
-  StatementReader(Reader in, Provider provider, long size, int windowSize, int longest) {
+  StatementReader(Reader in, Provider provider, long size, int windowSize, int limit) {
     this.in = in;
     this.provider = provider;
     this.size = size;
     this.windowSize = windowSize;
-    this.longest = longest;
+    this.limit = limit;
     this.wanted = windowSize;
   }
 
@@ -319,11 +319,11 @@ public final class StatementReader implements Closeable {
     }
     skipComments();
     int pending = buffer.length() - at;
-    if (pending > longest) {
+    if (pending > limit) {
       throw tooLong(firstLine());
     }
     // A part goes on beyond the window: twice as much, up to one char past the longest.
-    wanted = (int) Math.clamp(2L * pending, windowSize, longest + 1L);
+    wanted = (int) Math.clamp(2L * pending, windowSize, limit + 1L);
     return true;
   }
 
@@ -333,7 +333,7 @@ public final class StatementReader implements Closeable {
         Locale.ROOT,
         "The statement on line %d runs on past %,d characters, more than HooriDB reads of one",
         from,
-        longest));
+        limit));
   }
 
   // Takes the white space and the comments from the reader on whose end the buffer holds, as what
@@ -371,7 +371,7 @@ public final class StatementReader implements Closeable {
       int start = part.start() + context;
       lineAt += lines(position, start);
       offsetAt += bytes(position, start);
-      if (part.end() - part.start() > longest) {
+      if (part.end() - part.start() > limit) {
         if (ready.isEmpty()) {
           throw tooLong(lineAt);
         }

@@ -228,12 +228,16 @@ class FileRunTest {
         new FileRun.Options(false, true),
         new Session(Map.of("SELEC 2", WRONG)));
     assertEquals(0, unlocked.committedAt());
-    var created = run(
-        MYSQL,
-        "INSERT 1;\nCREATE TABLE t (id int);\nINSERT 2;\nLOCK TABLES t WRITE;\nUNLOCK TABLES;\n"
-            + "UNLOCK TABLES;\nSELEC 3;",
-        new FileRun.Options(false, true),
-        new Session(Map.of("SELEC 3", WRONG)));
+    var locked = """
+        INSERT 1;
+        CREATE TABLE t (id int);
+        INSERT 2;
+        LOCK TABLES t WRITE;
+        UNLOCK TABLES;
+        UNLOCK TABLES;
+        SELEC 3;""";
+    var created =
+        run(MYSQL, locked, new FileRun.Options(false, true), new Session(Map.of("SELEC 3", WRONG)));
     assertEquals(5, created.committedAt());
 
     // Not without one transaction, and not where the server does not.
