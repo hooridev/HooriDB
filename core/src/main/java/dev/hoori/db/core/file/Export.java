@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -64,15 +65,15 @@ public final class Export {
     var opened = Files.newOutputStream(part, StandardOpenOption.CREATE_NEW);
     try {
       long rows;
-      Set<PosixFilePermission> made;
+      Optional<Set<PosixFilePermission>> made;
       try (var out = new BufferedOutputStream(opened, 64 * 1024)) {
         made = ownerOnly(part);
         var writer = RowWriter.of(format, out);
         rows = reading.read(writer);
         writer.finish();
       }
-      if (made != null) {
-        Files.setPosixFilePermissions(part, given(file, made));
+      if (made.isPresent()) {
+        Files.setPosixFilePermissions(part, given(file, made.get()));
       }
       replace(part, file);
       return rows;
@@ -88,14 +89,14 @@ public final class Export {
 
   // Where the file system has POSIX permissions, the part is made readable and writable by its
   // owner alone before a row goes into it: the permissions it was made with, which are those a
-  // new file gets there; null elsewhere.
-  private static Set<PosixFilePermission> ownerOnly(Path part) throws IOException {
+  // new file gets there; none elsewhere.
+  private static Optional<Set<PosixFilePermission>> ownerOnly(Path part) throws IOException {
     if (!part.getFileSystem().supportedFileAttributeViews().contains("posix")) {
-      return null;
+      return Optional.empty();
     }
     var made = Files.getPosixFilePermissions(part);
     Files.setPosixFilePermissions(part, PosixFilePermissions.fromString("rw-------"));
-    return made;
+    return Optional.of(made);
   }
 
   // The permissions the whole file goes into place with: those of the file it replaces, so that a
