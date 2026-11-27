@@ -1097,17 +1097,17 @@ final class TransferTab implements Tab, Guard.Guarded {
       case COPYING -> progressView();
       case DONE -> {
         var failures = report.in(Report.State.FAILED);
-        yield failures.isEmpty()
-            ? Callout.callout(
-                    report.problem() == null ? Callout.Kind.SUCCESS : Callout.Kind.WARNING,
-                    "Copied",
-                    ended(tables(copied.size()) + ", " + ConsoleTab.rows(rows) + "."))
-                .key("transfer-done")
-            : Callout.callout(
-                    Callout.Kind.WARNING,
-                    "Copied " + copied.size() + " of " + tables(report.tables().size()),
-                    ended(failures(failures)))
-                .key("transfer-done");
+        if (!failures.isEmpty()) {
+          yield Callout.callout(
+                  Callout.Kind.WARNING,
+                  "Copied " + copied.size() + " of " + tables(report.tables().size()),
+                  ended(failures(failures)))
+              .key("transfer-done");
+        }
+        var kind = report.problem() == null ? Callout.Kind.SUCCESS : Callout.Kind.WARNING;
+        yield Callout.callout(
+                kind, "Copied", ended(tables(copied.size()) + ", " + ConsoleTab.rows(rows) + "."))
+            .key("transfer-done");
       }
       case STOPPED ->
         Callout.callout(

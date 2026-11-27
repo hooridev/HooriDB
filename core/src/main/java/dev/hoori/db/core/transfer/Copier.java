@@ -72,7 +72,7 @@ public final class Copier {
   private final List<Table> deleting = new ArrayList<>(); // and emptied, not committed yet
   private List<Entry> tables;
   private Stage stage = Stage.PREPARING;
-  private String problem; // what failed as the run ended, as a rollback after a cancel
+  private String ending; // what failed as the run ended, as a rollback after a cancel
   private boolean same; // whether the source and the target are on the same server and database
   private long batchBytes = BUDGET; // at most of a batch
 
@@ -133,7 +133,7 @@ public final class Copier {
     } finally {
       var unended = attempt(target::end);
       if (unended != null) {
-        problem("Closing the session of the target failed: " + why(unended));
+        ended("Closing the session of the target failed: " + why(unended));
       }
     }
     return tell();
@@ -157,8 +157,8 @@ public final class Copier {
   }
 
   // What went wrong as the run ended, after what went wrong before.
-  private void problem(String what) {
-    problem = problem == null ? what : problem + " " + what;
+  private void ended(String what) {
+    ending = ending == null ? what : ending + " " + what;
   }
 
   // Puts both sessions in the state a copy needs, and learns whether they are on the same server
@@ -489,7 +489,7 @@ public final class Copier {
         // What it wrote since its last commit may still be in the session: the cancel says so.
         var failed = "Rolling it back failed: " + why(unended);
         tables.set(index, left.with(State.CANCELLED, failed));
-        problem("Rolling back " + copying.table.copy().from().name() + " after the cancel failed: "
+        ended("Rolling back " + copying.table.copy().from().name() + " after the cancel failed: "
             + why(unended) + " What it wrote since its last commit may not have been undone.");
       }
       throw new Cancel();
@@ -588,7 +588,7 @@ public final class Copier {
   }
 
   private Report tell() {
-    var report = new Report(stage, problem, tables);
+    var report = new Report(stage, ending, tables);
     told.accept(report);
     return report;
   }
