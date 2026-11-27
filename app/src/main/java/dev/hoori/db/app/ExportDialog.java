@@ -24,7 +24,6 @@ import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.NumberField;
 import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Radio;
-import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.catalog.Container;
@@ -48,6 +47,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 /**
  * Export to SQL: the objects of a database or schema, as a list to check, with what of them goes
@@ -134,7 +134,7 @@ final class ExportDialog {
    */
   static ExportDialog open(State s, UUID id, Container on) {
     var profile = s.profile(id);
-    var session = s.catalog.session(s, id, on.database().name());
+    var session = s.catalog.browsingSession(s, id, on.database().name());
     if (profile == null || session == null) {
       return null;
     }
@@ -179,7 +179,7 @@ final class ExportDialog {
     if (!stale && !lane.broken()) {
       return true;
     }
-    var session = s.catalog.session(s, id, on.database().name());
+    var session = s.catalog.browsingSession(s, id, on.database().name());
     if (session == null) {
       return false;
     }
@@ -192,16 +192,7 @@ final class ExportDialog {
 
   // Closes the lane without waiting for it, which Exit waits for, and wipes its password.
   private void closeLane(State s) {
-    s.closing();
-    var closing = lane.close(ended -> {});
-    s.app.background(
-        "close the export's session",
-        () -> {
-          closing.join();
-          return null;
-        },
-        done -> s.closed(),
-        e -> s.closed());
+    s.close(lane, id, password, "the export's session");
     Arrays.fill(password, '\0');
   }
 
@@ -319,9 +310,24 @@ final class ExportDialog {
     return objects != null
         && !checked().isEmpty()
         && !noData()
+        && triggered().isEmpty()
         && file != null
         && replacing == null
         && exporting == null;
+  }
+
+  // Of data alone, the tables checked that have triggers, which the server cannot keep from firing
+  // for their rows, and the export refuses: none where it can.
+  private List<String> triggered() {
+    if (content.structure() || provider.dialect().dump().quietsTriggers()) {
+      return List.of();
+    }
+    var on = objects.stream()
+        .map(Listed::item)
+        .filter(i -> i.kind() == Item.Kind.TRIGGER)
+        .map(i -> Item.of(i.container(), Item.Kind.TABLE, i.table()))
+        .collect(Collectors.toSet());
+    return checked().stream().filter(on::contains).map(Item::name).distinct().toList();
   }
 
   // Of data alone, only tables and sequences have any, and none is checked.
@@ -622,12 +628,9 @@ final class ExportDialog {
     return col()
         .w(22 * unit)
         .gap(t.space().s())
-        .child(TextField.withIcon(
-            TextField.textField(filter, "Filter by name", v -> filter = v)
-                .key("export-filter")
-                .label("Filter")
-                .w(22 * unit),
-            Symbol.SEARCH))
+        .child(TextField.searchField(filter, "Filter by name", v -> filter = v)
+            .key("export-filter")
+            .wFull())
         .child(Card.flush(list).wFull().h(14 * unit))
         .child(label(Label.Variant.MUTED, summary.toString()).wrapText().key("export-summary"));
   }
@@ -793,6 +796,19 @@ final class ExportDialog {
                   + " is checked.")
           .wrapText()
           .key("export-no-data"));
+    }
+    var triggered = objects == null ? List.<String>of() : triggered();
+    if (!triggered.isEmpty()) {
+      status.child(Callout.callout(
+              Callout.Kind.WARNING,
+              triggered.size() == 1
+                  ? "A table has triggers"
+                  : triggered.size() + " tables have triggers",
+              provider.displayName() + " cannot keep the triggers of "
+                  + String.join(", ", triggered)
+                  + " from firing for the rows read back, which would change them. Export them"
+                  + " with their structure, or uncheck them.")
+          .key("export-triggered"));
     }
     if (replacing != null && replacing.found()) {
       status.child(replacingView(s));

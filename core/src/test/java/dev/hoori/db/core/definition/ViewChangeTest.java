@@ -28,6 +28,7 @@ class ViewChangeTest {
         List.of(),
         "",
         List.of(restore),
+        List.of(),
         Set.of(),
         Set.of());
     return new ViewDefinition(view, definition, References.NONE, false);

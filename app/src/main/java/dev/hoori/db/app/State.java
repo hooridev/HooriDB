@@ -38,6 +38,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 
 /** The app's state, which only the handlers change, on the app's thread. */
 final class State {
@@ -699,6 +700,36 @@ final class State {
     notices.removeIf(n -> n.number() <= shown);
   }
 
+  /**
+   * Closes the lane of a session of the connection's, as an export's or a monitor's, without
+   * waiting for it, which Exit waits for as it waits for a console's: what its closing says, as a
+   * call that did not end in time and was given up with its connection, goes to the notices,
+   * checked against a copy of the password, which goes once it has.
+   *
+   * @param session the session, as the notice names it, such as "the export's session"
+   */
+  void close(Lane lane, UUID id, char[] password, String session) {
+    var profile = profile(id);
+    var tell = new Teller(
+        app,
+        this,
+        id,
+        profile == null ? "" : name(profile),
+        password == null ? null : password.clone(),
+        null);
+    var reported = new CompletableFuture<Void>();
+    closing();
+    lane.close(ended -> {
+      try {
+        Session.told(ended, null, true, "Closing " + session + " failed: ", tell);
+      } finally {
+        tell.wipe();
+        reported.complete(null);
+      }
+    });
+    app.background("close " + session, reported::get, _ -> closed(), _ -> closed());
+  }
+
   /** A console's session begins to close, off the app's thread; {@link #closed} when it has. */
   void closing() {
     closing++;
@@ -1235,18 +1266,20 @@ final class State {
    * connection, a server of documents, or one not connected.
    */
   Exported exportFor(TabGroups.Group<Tab> group) {
-    var node = group == tabs.main().active() ? selected : null;
-    if (node instanceof Node.Problem(var of)) {
-      node = of;
+    Exported found = null;
+    // The schema or database that holds the node, however deep under it.
+    for (var node = group == tabs.main().active() ? selected : null;
+        node != null && found == null;
+        node = node.parent()) {
+      found = switch (node) {
+        case Node.OfSchema(var id, var schema) -> new Exported(id, schema);
+        case Node.OfDatabase(var id, var database) -> new Exported(id, database);
+        default -> null;
+      };
     }
-    Exported found = switch (node) {
-      case Node.OfDatabase(var id, var database) -> new Exported(id, database);
-      case Node.OfSchema(var id, var schema) -> new Exported(id, schema);
-      case Node.OfTable(var id, var table) -> new Exported(id, table.container());
-      case Node.OfColumn(var id, var column) -> new Exported(id, column.table().container());
-      case null, default ->
-        group.activeTab() instanceof TableTab x ? new Exported(x.id, x.table.container()) : null;
-    };
+    if (found == null && group.activeTab() instanceof TableTab x) {
+      found = new Exported(x.id, x.table.container());
+    }
     if (found == null || !catalog.connected(found.id())) {
       return null;
     }
@@ -1621,10 +1654,14 @@ final class State {
     var profile = profile(tab.id);
     var title = (profile == null ? "" : name(profile))
         + (tab.database.isEmpty() ? "" : ": " + tab.database);
-    var same = consoles(null).stream()
+    var same = new ArrayList<>(consoles(null).stream()
         .filter(x ->
             x.queryId == null && Objects.equals(x.id, tab.id) && x.database.equals(tab.database))
-        .toList();
+        .toList());
+    // A tab whose window opens is in no group until it has opened, and then in the last.
+    if (!same.contains(tab)) {
+      same.add(tab);
+    }
     return same.size() < 2 ? title : title + " (" + (same.indexOf(tab) + 1) + ")";
   }
 

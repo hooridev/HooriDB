@@ -37,7 +37,7 @@ PostgreSQL's `CREATE OR REPLACE VIEW` cannot drop, rename or reorder a view's co
 
 If other views or functions use the view, HooriDB does not offer this, because the drop would take them with it. It names them instead.
 
-A materialized view has no `CREATE OR REPLACE`. Saving one drops it and creates it again in one transaction, with its indexes, and then refreshes its rows.
+A materialized view has no `CREATE OR REPLACE`. Saving one drops it and creates it again in one transaction, with its indexes, and then refreshes its rows where it had any; one never refreshed stays so.
 
 ## Create a view
 

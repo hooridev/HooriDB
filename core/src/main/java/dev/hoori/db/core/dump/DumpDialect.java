@@ -26,6 +26,12 @@ public abstract class DumpDialect {
   public abstract boolean foreignKeyChecks();
 
   /**
+   * Whether a file of the data alone keeps the tables' triggers from firing for its rows; where it
+   * cannot, an export of the data alone refuses a table that has triggers.
+   */
+  public abstract boolean quietsTriggers();
+
+  /**
    * Keeps other sessions, until the snapshot ends, from changing the definitions of the tables or
    * emptying them, where the server lets a snapshot do so; right after {@link
    * DefinitionDialect#begin}, before anything of them is read.
@@ -36,9 +42,25 @@ public abstract class DumpDialect {
   abstract void lock(Connection connection, Provider provider, List<Item> tables)
       throws QueryException;
 
-  /** How the table's rows are read and written; empty where it keeps none of its own. */
-  abstract Optional<Data> data(Connection connection, Provider provider, Item table)
+  /**
+   * How the table's rows are read and written; empty where it keeps none of its own. Of an export
+   * of the data alone, which the file reads into a table that exists as the structure made it,
+   * with its triggers, constraints and row security, also what goes around its rows, so that the
+   * table takes them as they are.
+   *
+   * @param alone whether the export writes the data alone
+   * @throws QueryException {@link QueryException.Failure#OTHER} where the data alone cannot go
+   *     into the table as they are, as where the server cannot keep its triggers from firing
+   */
+  abstract Optional<Data> data(Connection connection, Provider provider, Item table, boolean alone)
       throws QueryException;
+
+  /**
+   * What lets the rows of an export of the data alone go into the tables, whose foreign keys refer
+   * to each other in a circle that no order of their rows suits: before all rows, and what puts it
+   * back after them; nothing for none.
+   */
+  abstract Around circle(List<Definition> tables);
 
   /** What sets up the session that reads the file back, as the values are written. */
   abstract List<String> header(Dump.Options options);
@@ -62,8 +84,36 @@ public abstract class DumpDialect {
   /** The statement that begins a transaction around the rows. */
   abstract String beginTransaction();
 
-  /** A table's rows: the query that reads them, and how each is written. */
-  record Data(String select, String insert, Reader reader) {}
+  /**
+   * A table's rows: the query that reads them, and how each is written.
+   *
+   * @param insert what each {@code INSERT} begins with, before its rows' values; where {@code
+   *     defaults} says so, the whole statement that each row goes as
+   * @param defaults whether the table has no column to write, so that each row goes as an {@code
+   *     INSERT} of its defaults alone
+   * @param transactional whether its engine keeps transactions: the rows of one that does not, as
+   *     MyISAM, go before all others, as a server that keeps its binary log consistent with GTIDs
+   *     takes them in a transaction only before any other change
+   * @param around of an export of the data alone, what goes before all tables' rows and after them
+   */
+  record Data(
+      String select,
+      String insert,
+      boolean defaults,
+      boolean transactional,
+      Reader reader,
+      Around around) {}
+
+  /** What goes before the rows of all tables, and what after them. */
+  record Around(List<String> before, List<String> after) {
+
+    static final Around NOTHING = new Around(List.of(), List.of());
+
+    Around {
+      before = List.copyOf(before);
+      after = List.copyOf(after);
+    }
+  }
 
   /** How the values of a query's columns are read, from what the server says of them. */
   interface Reader {

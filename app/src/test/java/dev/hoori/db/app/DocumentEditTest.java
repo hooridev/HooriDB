@@ -324,7 +324,7 @@ class DocumentEditTest {
     c.run(
         app,
         "press role=radio label=\"JSON\"\nframe\nadvance 1\nframe\n"
-            + "press #json\nkey End control\nkey ArrowUp\nkey ArrowUp\nframe\n"
+            + "press #json\nkey End control shift\nkey ArrowUp shift\nkey ArrowUp shift\nframe\n"
             + "press #edit-document\nframe\n" + OPENED + "snap json-edit\n");
     var tab = app.state().tables(DOCS.id()).getFirst();
     assertTrue(tab.documentDialog.text.contains("Grace"), tab.documentDialog.text);

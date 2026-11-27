@@ -2,6 +2,8 @@ package dev.hoori.db.core.dump;
 
 import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.data.Rows;
+import dev.hoori.db.core.definition.Definition;
 import dev.hoori.db.core.definition.Item;
 import dev.hoori.db.core.definition.Sql;
 import dev.hoori.db.core.query.QueryException;
@@ -18,10 +20,14 @@ import java.util.stream.Collectors;
 /**
  * How PostgreSQL's objects are exported, besides their definitions, which its {@link
  * dev.hoori.db.core.definition.PostgreSqlDefinitions} reads: the rows of a table itself, not those
- * of its children, and a materialized view refreshed from its tables once their rows are in, as
- * {@code pg_dump} does. The tables exported are locked as the snapshot begins, so that no other
- * session changes their definitions or empties them until it ends, as the functions that write
- * definitions read the catalog as it is then, not as of the snapshot.
+ * of its children, and a materialized view that has rows refreshed from its tables once their
+ * rows are in, as {@code pg_dump} does. The file reads its rows without row security, so that a
+ * table whose policies would hide them from the user fails rather than leaving them out; an export
+ * of the data alone turns off the tables' triggers for the rows, and what would refuse them, as
+ * {@code pg_dump --disable-triggers} does, and puts them back as they were. The tables exported
+ * are locked as the snapshot begins, so that no other session changes their definitions or empties
+ * them until it ends, as the functions that write definitions read the catalog as it is then, not
+ * as of the snapshot.
  */
 public final class PostgreSqlDump extends DumpDialect {
 
@@ -36,6 +42,7 @@ public final class PostgreSqlDump extends DumpDialect {
       "search_path",
       "check_function_bodies",
       "client_min_messages",
+      "row_security",
       "IntervalStyle",
       "DateStyle");
 
@@ -54,6 +61,11 @@ public final class PostgreSqlDump extends DumpDialect {
     return false;
   }
 
+  @Override
+  public boolean quietsTriggers() {
+    return true;
+  }
+
   // ACCESS SHARE, as pg_dump takes it: what reads or writes rows goes on, and what changes a
   // table's definition, drops it or empties it waits for the export. A session that holds one
   // already gets the bound to let go of it, after which the export fails rather than holding up
@@ -65,7 +77,7 @@ public final class PostgreSqlDump extends DumpDialect {
       return;
     }
     var names = tables.stream()
-        .map(t -> "ONLY " + qualified(provider, t.container().name(), t.name()))
+        .map(t -> "ONLY " + Rows.qualified(provider, t.container(), t.name()))
         .collect(Collectors.joining(", "));
     var was = Sql.one(
         connection, provider, LOCK_TIMEOUT, "SHOW " + LOCK_TIMEOUT, rows -> rows.getString(1));
@@ -98,17 +110,16 @@ public final class PostgreSqlDump extends DumpDialect {
         value);
   }
 
-  private static String qualified(Provider provider, String schema, String name) {
-    return provider.quote(schema) + "." + provider.quote(name);
-  }
-
-  private record Insertable(String kind, List<String> columns, boolean always) {}
+  private record Insertable(
+      String kind, List<String> columns, boolean always, boolean forceRowSecurity) {}
 
   // The rows of the table itself, not those of its children; of each column that is not
-  // generated, a value of a kind the literal writes as such, otherwise the server's text.
+  // generated, a value of a kind the literal writes as such, otherwise the server's text. A table
+  // without such a column has its rows as many INSERTs of its defaults.
   @Override
-  Optional<Data> data(Connection connection, Provider provider, Item table) throws QueryException {
-    var name = qualified(provider, table.container().name(), table.name());
+  Optional<Data> data(Connection connection, Provider provider, Item table, boolean alone)
+      throws QueryException {
+    var name = Rows.qualified(provider, table.container(), table.name());
     var read = Sql.one(
         connection,
         provider,
@@ -117,32 +128,112 @@ public final class PostgreSqlDump extends DumpDialect {
         SELECT c.relkind,
           pg_catalog.array_agg(pg_catalog.quote_ident(a.attname) ORDER BY a.attnum)
             FILTER (WHERE a.attgenerated = ''),
-          pg_catalog.bool_or(a.attidentity = 'a')
+          pg_catalog.bool_or(a.attidentity = 'a'), c.relforcerowsecurity
         FROM pg_catalog.pg_class c
         LEFT JOIN pg_catalog.pg_attribute a
           ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-        WHERE c.oid = pg_catalog.to_regclass(?) GROUP BY c.relkind""",
+        WHERE c.oid = pg_catalog.to_regclass(?) GROUP BY c.relkind, c.relforcerowsecurity""",
         rows -> {
           var array = rows.getArray(2);
           var columns = array == null ? List.<String>of() : List.of((String[]) array.getArray());
-          return new Insertable(rows.getString(1), columns, rows.getBoolean(3));
+          return new Insertable(rows.getString(1), columns, rows.getBoolean(3), rows.getBoolean(4));
         },
         name);
-    if (read.kind().equals("p") || read.columns().isEmpty()) {
+    if (read.kind().equals("p")) {
       return Optional.empty();
+    }
+    var around = alone ? around(connection, provider, name, read) : Around.NOTHING;
+    if (read.columns().isEmpty()) {
+      return Optional.of(new Data(
+          "SELECT FROM ONLY " + name,
+          "INSERT INTO " + name + " DEFAULT VALUES",
+          true,
+          true,
+          metadata -> List.of(),
+          around));
     }
     var columns = String.join(", ", read.columns());
     return Optional.of(new Data(
         "SELECT " + columns + " FROM ONLY " + name,
         "INSERT INTO " + name + " (" + columns + ")"
             + (read.always() ? " OVERRIDING SYSTEM VALUE" : "") + " VALUES",
+        false,
+        true,
         metadata -> {
           var values = new ArrayList<Value>();
           for (var i = 1; i <= metadata.getColumnCount(); i++) {
             values.add(value(metadata.getColumnTypeName(i)));
           }
           return values;
-        }));
+        },
+        around));
+  }
+
+  private record Enabled(String trigger, String mode) {}
+
+  private record NotValid(String name, String definition) {}
+
+  // What keeps a table that exists from refusing or changing the rows read into it, and puts it
+  // back after them: its triggers, which go back to the mode each had; forced row security, which
+  // would hold its owner to the policies; constraints that are not valid, which old rows need not
+  // pass, dropped and added again as they were.
+  private static Around around(
+      Connection connection, Provider provider, String name, Insertable read)
+      throws QueryException {
+    var before = new ArrayList<String>();
+    var after = new ArrayList<String>();
+    var triggers = Sql.rows(
+        connection, provider, """
+        SELECT t.tgname, t.tgenabled FROM pg_catalog.pg_trigger t
+        WHERE t.tgrelid = pg_catalog.to_regclass(?) AND NOT t.tgisinternal
+        ORDER BY t.tgname""", rows -> new Enabled(rows.getString(1), rows.getString(2)), name);
+    if (!triggers.isEmpty()) {
+      before.add("ALTER TABLE ONLY " + name + " DISABLE TRIGGER USER");
+      for (var trigger : triggers) {
+        var mode = switch (trigger.mode()) {
+          case "D" -> "";
+          case "R" -> " ENABLE REPLICA TRIGGER ";
+          case "A" -> " ENABLE ALWAYS TRIGGER ";
+          default -> " ENABLE TRIGGER ";
+        };
+        if (!mode.isEmpty()) {
+          after.add("ALTER TABLE ONLY " + name + mode + provider.quote(trigger.trigger()));
+        }
+      }
+    }
+    if (read.forceRowSecurity()) {
+      before.add("ALTER TABLE ONLY " + name + " NO FORCE ROW LEVEL SECURITY");
+      after.add("ALTER TABLE ONLY " + name + " FORCE ROW LEVEL SECURITY");
+    }
+    var checks = Sql.rows(
+        connection,
+        provider,
+        """
+        SELECT co.conname, pg_catalog.pg_get_constraintdef(co.oid)
+        FROM pg_catalog.pg_constraint co
+        WHERE co.conrelid = pg_catalog.to_regclass(?) AND NOT co.convalidated
+        AND co.contype IN ('c', 'f') AND co.conislocal
+        ORDER BY co.conname""",
+        rows -> new NotValid(rows.getString(1), rows.getString(2)),
+        name);
+    for (var check : checks) {
+      var constraint = provider.quote(check.name());
+      before.add("ALTER TABLE " + name + " DROP CONSTRAINT IF EXISTS " + constraint);
+      after.add("ALTER TABLE " + name + " ADD CONSTRAINT " + constraint + " " + check.definition());
+    }
+    return new Around(before, after);
+  }
+
+  // Their keys go while the rows go in, and come back after them, checking them all.
+  @Override
+  Around circle(List<Definition> tables) {
+    var before = new ArrayList<String>();
+    var after = new ArrayList<String>();
+    for (var table : tables) {
+      before.addAll(table.dropKeys());
+      after.addAll(table.keys());
+    }
+    return new Around(before, after);
   }
 
   // NaN and the infinities of numeric and floating point types stay text, as the literal quotes.
@@ -190,6 +281,7 @@ public final class PostgreSqlDump extends DumpDialect {
         "SELECT pg_catalog.set_config('search_path', '', false)",
         "SET check_function_bodies = false",
         "SET client_min_messages = warning",
+        "SET row_security = off",
         "SET IntervalStyle = 'postgres'",
         "SET DateStyle = 'ISO, YMD'");
   }

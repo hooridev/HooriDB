@@ -50,7 +50,8 @@ class DumpServerTest {
       List.of("""
       SELECT c.relname, c.relkind, c.relpersistence, c.relispartition,
         pg_catalog.pg_get_expr(c.relpartbound, c.oid), c.reloptions::text,
-        pg_catalog.obj_description(c.oid, 'pg_class')
+        pg_catalog.obj_description(c.oid, 'pg_class'), c.relrowsecurity, c.relforcerowsecurity,
+        c.relispopulated
       FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S') ORDER BY 1""", """
       SELECT c.relname, a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnotnull,
@@ -69,7 +70,7 @@ class DumpServerTest {
       JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
       WHERE n.nspname = 'public' ORDER BY 1, 3""", """
       SELECT t.relname, co.conname, co.contype, co.conislocal, co.coninhcount,
-        pg_catalog.pg_get_constraintdef(co.oid)
+        co.convalidated, pg_catalog.pg_get_constraintdef(co.oid)
       FROM pg_catalog.pg_constraint co JOIN pg_catalog.pg_class t ON t.oid = co.conrelid
       JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
       WHERE n.nspname = 'public' AND co.contype <> 'n' ORDER BY 1, 2""", """
@@ -86,7 +87,9 @@ class DumpServerTest {
       WHERE n.nspname = 'public' AND NOT t.tgisinternal ORDER BY 1, 2""", """
       SELECT sequencename, data_type, start_value, min_value, max_value, increment_by, cycle,
         cache_size, last_value
-      FROM pg_catalog.pg_sequences WHERE schemaname = 'public' ORDER BY 1""");
+      FROM pg_catalog.pg_sequences WHERE schemaname = 'public' ORDER BY 1""", """
+      SELECT tablename, policyname, permissive, roles::text, cmd, qual, with_check
+      FROM pg_catalog.pg_policies WHERE schemaname = 'public' ORDER BY 1, 2""");
 
   // What information_schema of MariaDB and MySQL tells of the objects of the database.
   private static final List<String> MYSQL_FACTS = List.of("""
@@ -158,24 +161,42 @@ class DumpServerTest {
     try (var databases = new Databases(provider)) {
       var structure = folder.resolve("structure.sql");
       var data = folder.resolve("data.sql");
-      // Without a circle of keys, which rows that go in where keys are checked cannot have.
-      try (var connection = databases.open(databases.source)) {
-        execute(
-            connection,
-            provider == Provider.POSTGRESQL
-                ? "ALTER TABLE parent DROP CONSTRAINT parent_child"
-                : "ALTER TABLE parent DROP FOREIGN KEY parent_child");
-      }
-      // Keys right after the tables, checked, with the rows in the order they refer to each other.
+      // Keys right after the tables, checked, with the rows in the order they refer to each other,
+      // but those of the circle of parent and child, which no order suits.
       var options = new Dump.Options(false, false, 100, false, false, false);
       export(databases, Dump.Content.STRUCTURE, options, structure, l -> true);
+      // MariaDB and MySQL cannot keep a trigger from firing for the rows, which a test below shows
+      // the export refuse: the data alone go while the table has none, and it comes back after.
+      var mysql = provider != Provider.POSTGRESQL;
+      if (mysql) {
+        databases.inSource("DROP TRIGGER parent_none");
+      }
       export(databases, Dump.Content.DATA, options, data, l -> true);
+      if (mysql) {
+        databases.inSource(MYSQL_TRIGGER);
+      }
       assertFalse(Files.readString(structure).contains("INSERT INTO"));
       assertFalse(Files.readString(data).contains("CREATE TABLE"));
       databases.run(Files.readString(structure));
       assertEquals(0, databases.rows(databases.target, "parent").size());
       databases.run(Files.readString(data));
       databases.assertSame();
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void theDataAloneOfATableWithTriggersIsRefusedWhereTheyCannotBeKeptFromFiring(Provider provider)
+      throws Exception {
+    assumeTrue(provider != Provider.POSTGRESQL, "PostgreSQL turns them off for the rows");
+    try (var databases = new Databases(provider)) {
+      var file = folder.resolve("triggered.sql");
+      var refused = assertThrows(
+          QueryException.class,
+          () -> export(databases, Dump.Content.DATA, Dump.Options.DEFAULT, file, l -> true));
+      assertEquals(QueryException.Failure.OTHER, refused.failure());
+      assertTrue(refused.detail().contains("parent"), refused.detail());
+      assertFalse(Files.exists(file));
     }
   }
 
@@ -432,14 +453,13 @@ class DumpServerTest {
       before.on(connection);
       var listed = Dump.list(connection, databases.provider, databases.container());
       var kinds = listed.stream().map(l -> l.item().kind()).distinct().toList();
-      assertTrue(
-          kinds.containsAll(List.of(
-              Item.Kind.TABLE,
-              Item.Kind.VIEW,
-              Item.Kind.FUNCTION,
-              Item.Kind.PROCEDURE,
-              Item.Kind.TRIGGER)),
-          listed.toString());
+      // Of each kind, but triggers where the data alone go without them.
+      var some = new ArrayList<>(
+          List.of(Item.Kind.TABLE, Item.Kind.VIEW, Item.Kind.FUNCTION, Item.Kind.PROCEDURE));
+      if (content.structure()) {
+        some.add(Item.Kind.TRIGGER);
+      }
+      assertTrue(kinds.containsAll(some), listed.toString());
       var items = listed.stream().filter(chosen).map(Listed::item).toList();
       var steps = new ArrayList<Item>();
       var choice = new Dump.Choice(new Database(databases.source, false), items, content, options);
@@ -507,6 +527,13 @@ class DumpServerTest {
         password = ("root-" + TestServer.PASSWORD).toCharArray();
       }
       return Connector.open(profile, password, server.driver(), TIMEOUT).connection();
+    }
+
+    // The statement, on the database of the objects.
+    void inSource(String sql) throws Exception {
+      try (var connection = open(source)) {
+        execute(connection, sql);
+      }
     }
 
     // Each statement of the text, as it splits.
@@ -594,7 +621,9 @@ class DumpServerTest {
         var qualified = provider == Provider.POSTGRESQL
             ? "public." + provider.quote(table)
             : provider.quote(table);
-        var select = provider == Provider.POSTGRESQL ? "*" : exactly(connection, database, table);
+        // A constant after them, so that a table without columns has one to order by.
+        var select =
+            provider == Provider.POSTGRESQL ? "*, 0" : exactly(connection, database, table);
         try (var result =
             statement.executeQuery("SELECT " + select + " FROM " + qualified + " ORDER BY 1")) {
           var rows = new ArrayList<List<String>>();
@@ -737,9 +766,45 @@ class DumpServerTest {
             + " (2, NULL, NULL, NULL, NULL, NULL, '-Infinity', false, NULL, NULL, NULL, NULL,"
             + " NULL, '{}', NULL, '', NULL)",
         "INSERT INTO scratch VALUES ('kept')",
+        // A trigger of the partitioned table that changes the rows, which its partition's clone
+        // must not change again as they are read back.
+        "CREATE FUNCTION shifted() RETURNS trigger LANGUAGE plpgsql"
+            + " AS $$ BEGIN NEW.id := NEW.id + 10; RETURN NEW; END $$",
+        "CREATE TRIGGER measure_shift BEFORE INSERT ON measure FOR EACH ROW"
+            + " EXECUTE FUNCTION shifted()",
         "INSERT INTO measure VALUES (1, '2024-05-01'), (2, '2024-06-01')",
-        "REFRESH MATERIALIZED VIEW counted");
+        "REFRESH MATERIALIZED VIEW counted",
+        // Never refreshed, which it stays.
+        "CREATE MATERIALIZED VIEW never_read AS SELECT id FROM parent WITH NO DATA",
+        // Row security with policies, which hide rows and refuse others.
+        "CREATE TABLE tenant_rows (tenant text, v integer)",
+        "INSERT INTO tenant_rows VALUES ('someone else', 1), (current_user, 2), ('nobody', -1)",
+        "ALTER TABLE tenant_rows ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE tenant_rows FORCE ROW LEVEL SECURITY",
+        "CREATE POLICY own ON tenant_rows USING (tenant = current_user) WITH CHECK (v > 0)",
+        "CREATE POLICY readable ON tenant_rows AS RESTRICTIVE FOR SELECT TO PUBLIC"
+            + " USING (v >= 0)",
+        // Tables without a column to write, whose rows go all the same.
+        "CREATE TABLE no_columns ()",
+        "INSERT INTO no_columns SELECT FROM pg_catalog.generate_series(1, 3)",
+        "CREATE TABLE only_generated (g integer GENERATED ALWAYS AS (1) STORED)",
+        "INSERT INTO only_generated DEFAULT VALUES",
+        "INSERT INTO only_generated DEFAULT VALUES",
+        // A trigger that changes the rows, which must not fire again as they are read back.
+        "CREATE FUNCTION bumped() RETURNS trigger LANGUAGE plpgsql"
+            + " AS $$ BEGIN NEW.v := NEW.v + 1; RETURN NEW; END $$",
+        "CREATE TABLE bumps (v integer)",
+        "CREATE TRIGGER bumps_bump BEFORE INSERT ON bumps FOR EACH ROW EXECUTE FUNCTION bumped()",
+        "INSERT INTO bumps VALUES (1), (99)",
+        // Constraints that rows already there break, which are not valid for them.
+        "ALTER TABLE child ADD CONSTRAINT note_short CHECK (length(note) < 3) NOT VALID",
+        "ALTER TABLE bumps ADD CONSTRAINT bumps_parent FOREIGN KEY (v) REFERENCES parent (id)"
+            + " NOT VALID");
   }
+
+  private static final String MYSQL_TRIGGER =
+      "CREATE TRIGGER parent_none BEFORE INSERT ON parent FOR EACH ROW BEGIN"
+          + " IF NEW.name = '' THEN SET NEW.name = 'none'; END IF; END";
 
   private static List<String> mysql(Provider provider) {
     var statements = new ArrayList<>(List.of(
@@ -761,8 +826,7 @@ class DumpServerTest {
         "CREATE VIEW z_base AS SELECT id, name FROM parent",
         "CREATE VIEW a_top AS SELECT id, twice(id) AS t FROM z_base",
         "CREATE PROCEDURE touch() BEGIN SELECT 1; SELECT 2; END",
-        "CREATE TRIGGER parent_none BEFORE INSERT ON parent FOR EACH ROW BEGIN"
-            + " IF NEW.name = '' THEN SET NEW.name = 'none'; END IF; END",
+        MYSQL_TRIGGER,
         "INSERT INTO parent (name) VALUES ('ada'), ('it''s \\\\ quoted'), ('Grüße ✓'), ('')",
         "INSERT INTO child (parent_id, note) VALUES (1, 'first'), (2, NULL),"
             + " (2, 'line\\nbreak and \\0 nul')",
@@ -777,7 +841,16 @@ class DumpServerTest {
             + " 0, '', NULL)",
         // A float of more digits than these servers write of one.
         "INSERT INTO typed (id, f) VALUES (3, 1.23456789)",
-        "INSERT INTO plain VALUES ('kept')"));
+        "INSERT INTO plain VALUES ('kept')",
+        // No column to write, whose rows go all the same.
+        "CREATE TABLE only_generated (g integer GENERATED ALWAYS AS (1) VIRTUAL)",
+        "INSERT INTO only_generated () VALUES (), ()",
+        // A view that reads one whose column has its name, which it does not need for that.
+        "CREATE VIEW z_alias AS SELECT id AS a_reader FROM parent",
+        "CREATE VIEW a_reader AS SELECT a_reader FROM z_alias",
+        // A name that breaks the line of SHOW CREATE TABLE.
+        "CREATE TABLE wrapped_names (`first\nsecond` integer, k integer, KEY by_k (k))",
+        "INSERT INTO wrapped_names VALUES (1, 2)"));
     if (provider == Provider.MARIADB) {
       statements.add("CREATE SEQUENCE counter START WITH 5");
       statements.add("SELECT NEXTVAL(counter), NEXTVAL(counter)");

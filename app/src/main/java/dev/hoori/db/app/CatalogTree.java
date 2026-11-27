@@ -841,6 +841,18 @@ final class CatalogTree {
    * runs on it never holds up the tree or a table tab.
    */
   Session session(State s, UUID id, String database) {
+    return session(s, id, database, false);
+  }
+
+  /**
+   * A session as {@link #session} opens it, read-only at the server as the tree's are, for what
+   * only reads, such as an export: what it runs cannot change the server's data.
+   */
+  Session browsingSession(State s, UUID id, String database) {
+    return session(s, id, database, true);
+  }
+
+  private Session session(State s, UUID id, String database, boolean readOnly) {
     var live = lives.get(id);
     if (live == null || !(live.phase instanceof Live.Connected)) {
       return null;
@@ -848,6 +860,9 @@ final class CatalogTree {
     // A console finds a lost connection in what its statements give, not through the tree.
     var lane = new Lane(e -> {});
     var profile = database.isEmpty() ? live.profile : live.profile.withDatabase(database);
+    if (readOnly) {
+      profile = browsing(profile);
+    }
     lane.open(servers, profile, live.password, live.driver, s.settings.connectTimeout());
     return new Session(lane, live.driver, live.password.clone());
   }

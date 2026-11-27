@@ -5,6 +5,7 @@ import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
@@ -292,7 +293,7 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
       this.chosen = chosen;
       this.item = found.listed().item();
       this.oid = "'" + found.oid() + "'::pg_catalog.oid";
-      this.name = qualified(provider, item.container().name(), item.name());
+      this.name = Rows.qualified(provider, item.container(), item.name());
     }
 
     private String literal(String text) {
@@ -317,15 +318,23 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
         String options,
         String partitionKey,
         String bound,
-        String comment) {}
+        String comment,
+        boolean rowSecurity,
+        boolean forceRowSecurity) {}
 
     private record Parent(long oid, String name) {}
 
-    private record Constraint(String name, String type, String definition, long refers) {}
+    private record Constraint(
+        String name, String type, String definition, long refers, boolean valid) {}
 
-    // A table's constraints: those that go into its CREATE TABLE, and its foreign keys apart.
+    // A table's constraints: those that go into its CREATE TABLE, its foreign keys apart, and
+    // those that are not valid, which follow its rows.
     private record Constraints(
-        List<String> inline, List<String> keys, List<String> dropKeys, Set<Item> refers) {}
+        List<String> inline,
+        List<String> keys,
+        List<String> dropKeys,
+        List<String> notValid,
+        Set<Item> refers) {}
 
     // A table as CREATE TABLE writes it: its own columns and its constraints but foreign keys; a
     // partition as one of its table, whose columns it has; a child with the tables it inherits.
@@ -335,7 +344,7 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
           SELECT c.relpersistence, c.relkind, pg_catalog.array_to_string(c.reloptions, ', '),
             CASE WHEN c.relkind = 'p' THEN pg_catalog.pg_get_partkeydef(c.oid) END,
             CASE WHEN c.relispartition THEN pg_catalog.pg_get_expr(c.relpartbound, c.oid) END,
-            pg_catalog.obj_description(c.oid, 'pg_class')
+            pg_catalog.obj_description(c.oid, 'pg_class'), c.relrowsecurity, c.relforcerowsecurity
           FROM pg_catalog.pg_class c WHERE c.oid = %s""".formatted(oid),
           rows -> new Relation(
               rows.getString(1),
@@ -343,7 +352,9 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
               rows.getString(3),
               rows.getString(4),
               rows.getString(5),
-              rows.getString(6)));
+              rows.getString(6),
+              rows.getBoolean(7),
+              rows.getBoolean(8)));
       var parents =
           rows("""
           SELECT i.inhparent, i.inhparent::pg_catalog.regclass::pg_catalog.text
@@ -379,6 +390,8 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
       }
       statements.addAll(comments);
       statements.addAll(owned());
+      var afterRows = new ArrayList<>(constraints.notValid());
+      afterRows.addAll(security(relation));
       return new Definition(
           item,
           statements,
@@ -388,31 +401,106 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
           constraints.dropKeys(),
           "DROP TABLE IF EXISTS " + name,
           restore,
+          afterRows,
           needs,
           constraints.refers());
+    }
+
+    private record Policy(
+        String name,
+        boolean permissive,
+        String command,
+        String roles,
+        String using,
+        String check) {}
+
+    // Row security as the table has it, and its policies.
+    private List<String> security(Relation relation) throws QueryException {
+      var statements = new ArrayList<String>();
+      if (relation.rowSecurity()) {
+        statements.add("ALTER TABLE ONLY " + name + " ENABLE ROW LEVEL SECURITY");
+      }
+      if (relation.forceRowSecurity()) {
+        statements.add("ALTER TABLE ONLY " + name + " FORCE ROW LEVEL SECURITY");
+      }
+      var policies = rows(
+          """
+          SELECT p.polname, p.polpermissive, p.polcmd,
+            (SELECT pg_catalog.string_agg(CASE WHEN u.role = 0 THEN 'PUBLIC'
+                ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(u.role)) END, ', '
+                ORDER BY u.n)
+              FROM pg_catalog.unnest(p.polroles) WITH ORDINALITY u(role, n)),
+            pg_catalog.pg_get_expr(p.polqual, p.polrelid),
+            pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid)
+          FROM pg_catalog.pg_policy p WHERE p.polrelid = %s ORDER BY p.polname""".formatted(oid),
+          rows -> new Policy(
+              rows.getString(1),
+              rows.getBoolean(2),
+              rows.getString(3),
+              rows.getString(4),
+              rows.getString(5),
+              rows.getString(6)));
+      for (var policy : policies) {
+        var create = new StringBuilder("CREATE POLICY ")
+            .append(quote(policy.name()))
+            .append(" ON ")
+            .append(name)
+            .append(policy.permissive() ? " AS PERMISSIVE" : " AS RESTRICTIVE")
+            .append(" FOR ")
+            .append(
+                switch (policy.command()) {
+                  case "r" -> "SELECT";
+                  case "a" -> "INSERT";
+                  case "w" -> "UPDATE";
+                  case "d" -> "DELETE";
+                  default -> "ALL";
+                })
+            .append(" TO ")
+            .append(policy.roles());
+        if (policy.using() != null) {
+          create.append(" USING (").append(policy.using()).append(')');
+        }
+        if (policy.check() != null) {
+          create.append(" WITH CHECK (").append(policy.check()).append(')');
+        }
+        statements.add(create.toString());
+      }
+      return statements;
     }
 
     // Those that a partition or a child has from its table come with it.
     private Constraints constraints(String only) throws QueryException {
       var constraints = rows(
           """
-          SELECT co.conname, co.contype, pg_catalog.pg_get_constraintdef(co.oid), co.confrelid
+          SELECT co.conname, co.contype, pg_catalog.pg_get_constraintdef(co.oid), co.confrelid,
+            co.convalidated
           FROM pg_catalog.pg_constraint co WHERE co.conrelid = %s
           AND co.contype IN ('p', 'u', 'c', 'x', 'f') AND co.conislocal
           ORDER BY co.contype = 'f', co.contype = 'c', co.conname""".formatted(oid),
           rows -> new Constraint(
-              rows.getString(1), rows.getString(2), rows.getString(3), rows.getLong(4)));
+              rows.getString(1),
+              rows.getString(2),
+              rows.getString(3),
+              rows.getLong(4),
+              rows.getBoolean(5)));
       var inline = new ArrayList<String>();
       var keys = new ArrayList<String>();
       var dropKeys = new ArrayList<String>();
+      var notValid = new ArrayList<String>();
       var refers = new HashSet<Item>();
       for (var constraint : constraints) {
         var named = "CONSTRAINT " + quote(constraint.name()) + " " + constraint.definition();
-        if (!constraint.type().equals("f")) {
+        // Added NOT VALID, as its definition says, to the table and what inherits it.
+        if (!constraint.valid()) {
+          notValid.add("ALTER TABLE " + name + " ADD " + named);
+        } else if (!constraint.type().equals("f")) {
           inline.add(named);
+        } else {
+          keys.add("ALTER TABLE " + only + name + " ADD " + named);
+        }
+        if (!constraint.type().equals("f")) {
           continue;
         }
-        keys.add("ALTER TABLE " + only + name + " ADD " + named);
         dropKeys.add("ALTER TABLE IF EXISTS " + only + name + " DROP CONSTRAINT IF EXISTS "
             + quote(constraint.name()));
         var to = known.relations.get(constraint.refers());
@@ -420,7 +508,7 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
           refers.add(to);
         }
       }
-      return new Constraints(inline, keys, dropKeys, refers);
+      return new Constraints(inline, keys, dropKeys, notValid, refers);
     }
 
     // The CREATE TABLE itself.
@@ -530,7 +618,7 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
         return Optional.ofNullable(known.relations.get(rows.getLong(1)))
             .filter(chosen::contains)
             .map(sequence -> "ALTER SEQUENCE "
-                + qualified(provider, sequence.container().name(), sequence.name())
+                + Rows.qualified(provider, sequence.container(), sequence.name())
                 + " OWNED BY " + name + "." + column);
       });
     }
@@ -641,17 +729,24 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
       return statements;
     }
 
-    private record View(String kind, String options, String definition, String comment) {}
+    private record View(
+        String kind, String options, String definition, String comment, boolean populated) {}
 
-    // A materialized view without its rows, which its refresh gives after the tables' rows.
+    // A materialized view without its rows, which its refresh gives after the tables' rows where
+    // it has any; one never refreshed stays so.
     Definition view() throws QueryException {
       var view = one(
           """
           SELECT c.relkind, pg_catalog.array_to_string(c.reloptions, ', '),
-            pg_catalog.pg_get_viewdef(c.oid), pg_catalog.obj_description(c.oid, 'pg_class')
+            pg_catalog.pg_get_viewdef(c.oid), pg_catalog.obj_description(c.oid, 'pg_class'),
+            c.relispopulated
           FROM pg_catalog.pg_class c WHERE c.oid = %s""".formatted(oid),
-          rows ->
-              new View(rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4)));
+          rows -> new View(
+              rows.getString(1),
+              rows.getString(2),
+              rows.getString(3),
+              rows.getString(4),
+              rows.getBoolean(5)));
       var materialized = view.kind().equals("m");
       var create = new StringBuilder(materialized ? "CREATE MATERIALIZED VIEW " : "CREATE VIEW ")
           .append(name);
@@ -676,7 +771,10 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
           List.of(),
           List.of(),
           "DROP " + kind + "IF EXISTS " + name,
-          materialized ? List.of("REFRESH MATERIALIZED VIEW " + name) : List.of(),
+          materialized && view.populated()
+              ? List.of("REFRESH MATERIALIZED VIEW " + name)
+              : List.of(),
+          List.of(),
           needs(CLASS),
           Set.of());
     }
@@ -703,6 +801,7 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
           List.of(),
           "DROP SEQUENCE IF EXISTS " + name,
           List.of(value(name)),
+          List.of(),
           Set.of(),
           Set.of());
     }
@@ -738,6 +837,7 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
           List.of(),
           "DROP " + kind + "IF EXISTS " + signature,
           List.of(),
+          List.of(),
           needs(PROC),
           Set.of());
     }
@@ -751,7 +851,7 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
           FROM pg_catalog.pg_trigger t WHERE t.oid = %s""".formatted(oid),
           rows ->
               new Trigger(rows.getString(1), rows.getString(2), rows.getLong(3), rows.getLong(4)));
-      var table = qualified(provider, item.container().name(), item.table());
+      var table = Rows.qualified(provider, item.container(), item.table());
       var statements = new ArrayList<String>();
       statements.add(trigger.definition());
       // Created enabled in origin mode, as the catalog's O.
@@ -781,6 +881,7 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
           List.of(),
           List.of(),
           "DROP TRIGGER IF EXISTS " + quote(item.name()) + " ON " + table,
+          List.of(),
           List.of(),
           needs,
           Set.of());
@@ -829,10 +930,6 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
       var trimmed = sql.strip();
       return trimmed.endsWith(";") ? trimmed.substring(0, trimmed.length() - 1) : trimmed;
     }
-  }
-
-  private static String qualified(Provider provider, String schema, String name) {
-    return provider.quote(schema) + "." + provider.quote(name);
   }
 
   // The view by its names, with its row type, which a routine's result may use.

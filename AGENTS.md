@@ -148,26 +148,31 @@ and triggers, all checked, filtered by name, with All and None per schema and ea
 estimated rows and size, and writes those checked to a file chosen: structure and data, structure
 only or data only, with `DROP … IF EXISTS`, `CREATE SCHEMA` or `DATABASE`, a transaction around the
 rows, rows per `INSERT`, the indexes and foreign keys after the rows, and on MariaDB and MySQL
-`FOREIGN_KEY_CHECKS = 0`. It reads on a session of its own, in one read-only snapshot, the
-definitions as `SHOW CREATE` gives them on MariaDB and MySQL and as built from PostgreSQL's catalog,
-in the order of what each needs, and the rows streamed as `INSERT`s of many rows; it shows how far
-it is and can be cancelled, and writes beside the file until whole, so that a cancelled or failed
-export leaves it as it was. A view of a server of SQL opens its definition in a tab of its own
-("Definition" in its menu, Shift+Enter, the File menu or the palette): the statements that create
-it as the export writes them, laid out, read-only until Edit, in an editor with the console's
-colors and completions, beside what it uses and what uses it (from `pg_depend` on PostgreSQL, from
-the qualified names of `information_schema.VIEWS` on MariaDB and MySQL), each table or view of
-them opened by a press. Save shows its `CREATE OR REPLACE VIEW` before it runs, in one transaction
-on PostgreSQL where it is several statements; where PostgreSQL keeps the view's columns, it asks to
-drop and create it in one transaction, saying that privileges are lost, unless something uses it,
-which it names. "New view…", in a database's or schema's menu or the File menu, takes a schema, a
-name and a `SELECT`, shown as its `CREATE VIEW`; "Drop view…" names what uses the view and drops
-that with it (`CASCADE`) where the server does. PostgreSQL's materialized views stand apart in the
-tree, with their own icon and kind, are dropped, created and refreshed when saved, and refresh
-their rows after a question, `CONCURRENTLY` where they hold rows and a unique index of columns
-allows it. The tab reads and changes on a session of its own, the tree reads the schema or
-database again after a change, and a read-only connection changes no view: its items are off and
-core sends nothing. Run from its app image,
+`FOREIGN_KEY_CHECKS = 0`. It reads on a session of its own, read-only at the server, in one
+read-only snapshot, the definitions as `SHOW CREATE` gives them on MariaDB and MySQL and as built
+from PostgreSQL's catalog, with its row security and policies and its constraints that are not valid
+after the rows, in the order of what each needs, and the rows streamed as `INSERT`s of many rows; of
+the data alone, PostgreSQL's file turns off the tables' triggers, forced row security and
+constraints that are not valid, and the keys of tables that refer to each other in a circle, around
+the rows, and MariaDB's and MySQL's turns off the checks of such keys and refuses a table with
+triggers, which the dialog says before; it shows how far it is and can be cancelled, writes beside
+the file until whole, so that a cancelled or failed export leaves it as it was, and closes its
+session as the monitor does, with what a failed closing says among the notices. A view of a server
+of SQL opens its definition in a tab of its own ("Definition" in its menu, Shift+Enter, the File
+menu or the palette): the statements that create it as the export writes them, laid out, read-only
+until Edit, in an editor with the console's colors and completions, beside what it uses and what
+uses it (from `pg_depend` on PostgreSQL, from the qualified names of `information_schema.VIEWS` on
+MariaDB and MySQL), each table or view of them opened by a press. Save shows its `CREATE OR REPLACE
+VIEW` before it runs, in one transaction on PostgreSQL where it is several statements; where
+PostgreSQL keeps the view's columns, it asks to drop and create it in one transaction, saying that
+privileges are lost, unless something uses it, which it names. "New view…", in a database's or
+schema's menu or the File menu, takes a schema, a name and a `SELECT`, shown as its `CREATE VIEW`;
+"Drop view…" names what uses the view and drops that with it (`CASCADE`) where the server does.
+PostgreSQL's materialized views stand apart in the tree, with their own icon and kind, are dropped,
+created and, where they held rows, refreshed when saved, and refresh their rows after a question,
+`CONCURRENTLY` where they hold rows and a unique index of columns allows it. The tab reads and changes on a session of its
+own, the tree reads the schema or database again after a change, and a read-only connection changes
+no view: its items are off and core sends nothing. Run from its app image,
 HooriDB looks for a newer GitHub release at each start, in the channel Settings chooses, Stable or
 Nightly (at first that of its own version), downloads it, shows its highlights and change count in a
 tooltip while its notice is hovered, and restarts into it through its own Exit when asked; the new
@@ -426,7 +431,9 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
 - An export runs against `FakeServers` too: it lists the tables and views of the outline, with the
   rows and estimates `rows` gives, and what `objects` adds, as routines and triggers; its calls are
   keyed `export list <host>/<path>` and `export <host>/<database>`, held at its gate before it writes
-  a made-up file that names the objects, and `exported` keeps what each export chose. A script
+  a made-up file that names the objects, and `exported` keeps what each export chose;
+  `failsAtClose` makes the closing of a host's link, or of one to its database, say that it failed,
+  as a monitor's or an export's session's whose last call did not end in time. A script
   answers the file dialog with `dialog "<path>"` before the press that opens it. Core's
   `DumpServerTest` reads real exports back into an empty database of each `TestServer`, statement by
   statement as `Statements.split` splits them, as root on MariaDB and MySQL, and through the

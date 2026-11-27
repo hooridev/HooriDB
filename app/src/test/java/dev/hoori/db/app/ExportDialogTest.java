@@ -16,9 +16,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.rethinkj.ui.App;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Schema;
+import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.definition.Item;
 import dev.hoori.db.core.definition.Listed;
 import dev.hoori.db.core.dump.Dump;
+import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.query.QueryException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -90,8 +92,10 @@ class ExportDialogTest {
     assertTrue(line(tree, "#export-summary").contains("5 of 5 objects checked, 2 tables"), tree);
     // No file chosen yet: Export waits for one.
     assertTrue(line(tree, "role=button label=\"Export\"").contains("disabled"), tree);
-    // Read on a connection of its own, behind the tree's.
+    // Read on a connection of its own, behind the tree's, read-only at the server, so that what
+    // the export reads, as a view or function that writes, cannot change it.
     assertTrue(c.servers.linked.contains("2 " + LIST), c.servers.linked.toString());
+    assertTrue(c.servers.readOnly(2));
   }
 
   @Test
@@ -131,7 +135,7 @@ class ExportDialogTest {
     assertTrue(line(none, "#export-summary").contains("0 of 5 objects checked"), none);
     assertTrue(line(none, "role=button label=\"Export\"").contains("disabled"), none);
     c.run(app, """
-        press #export-filter
+        press role=textbox label="Filter by name"
         type "ord"
         frame
         press role=button label="Check all of public"
@@ -234,7 +238,49 @@ class ExportDialogTest {
   }
 
   @Test
+  void aSessionWhoseClosingFailsSaysSoInTheNotices() throws Exception {
+    var app = opened();
+    c.servers.failsAtClose(
+        PG + "/shop", FakeServers.serverError(Failure.Kind.CONNECTION_LOST, "it did not end"));
+    c.run(app, "press role=button label=\"Close\"\nframe\n" + SETTLE + "snap closed\n");
+    CatalogTreeTest.eventually(() -> !app.state().notices.isEmpty());
+    var notice = app.state().notices.getFirst();
+    assertEquals("shop-prod", notice.connection());
+    assertTrue(notice.what().contains("Closing the export's session failed: it did not end"));
+    assertTrue(notice.failure());
+  }
+
+  @Test
+  void theFileMenuExportsTheSchemaOfAnyNodeUnderIt() throws Exception {
+    c.servers.serve(PG, Provider.POSTGRESQL, "16.4", CatalogTreeTest.INDEX_OUTLINE);
+    var app = c.app(SHOP);
+    c.ready(app, SHOP);
+    c.run(
+        app,
+        START
+            + open("shop-prod")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("public")
+            + SETTLE
+            + open("orders")
+            + SETTLE
+            + open("Indexes")
+            + SETTLE);
+    c.run(
+        app,
+        "press role=treeitem label=\"orders_pkey\"\nframe\n"
+            + "press role=menuitem label=\"File\"\nframe\nadvance 1\nframe\n"
+            + "press role=menuitem label=\"Export to SQL…\"\nframe\n" + SETTLE + "snap index\n");
+    assertTrue(c.tree("index").contains("\"Export shop.public to SQL\""), c.tree("index"));
+  }
+
+  @Test
   void theFileMenuExportsTheDatabaseOfWhatIsSelected() throws Exception {
+    var legacy = new Database("legacy", false);
+    c.servers.objects(
+        MYSQL, Listed.of(new Item(legacy, Item.Kind.TRIGGER, "audited", "", "accounts")));
     var app = c.app(LEGACY);
     c.ready(app, LEGACY);
     // The connection's row, then its database's of the same name below it.
@@ -249,6 +295,22 @@ class ExportDialogTest {
     assertTrue(tree.contains("role=checkbox label=\"Create the database\""), tree);
     // MariaDB and MySQL can check no foreign keys while the rows go.
     assertTrue(tree.contains("FOREIGN_KEY_CHECKS = 0"), tree);
+    // Nor can they keep a table's triggers from firing for the data alone, which wait for it to
+    // go with its structure, or not at all.
+    c.run(
+        app,
+        choose(dir.resolve("legacy.sql"))
+            + "press role=radio label=\"Data only, of the tables\"\nframe\nadvance 1\nframe\n"
+            + "snap triggered\n");
+    var triggered = c.tree("triggered");
+    assertTrue(triggered.contains("#export-triggered"), triggered);
+    assertTrue(triggered.contains("cannot keep the triggers of accounts from firing"), triggered);
+    assertTrue(line(triggered, "role=button label=\"Export\"").contains("disabled"), triggered);
+    c.run(app, "press role=checkbox label=\"accounts\"\nframe\nadvance 1\nframe\nsnap unchecked\n");
+    var unchecked = c.tree("unchecked");
+    assertFalse(unchecked.contains("export-triggered"), unchecked);
+    // It was the only table, so that only the trigger is checked now, which has no rows.
+    assertTrue(unchecked.contains("#export-no-data"), unchecked);
     assertTrue(
         c.servers.calls.contains("export list " + MYSQL + "/legacy"), c.servers.calls.toString());
   }
