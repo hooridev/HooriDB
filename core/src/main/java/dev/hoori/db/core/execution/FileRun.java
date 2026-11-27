@@ -400,13 +400,18 @@ public final class FileRun {
       if (failure.isEmpty()) {
         kept = Kept.COMMITTED;
       } else {
-        list(0, "COMMIT", failure.get().message());
+        // Its words without its detail, which may quote a row, as a deferred constraint's does.
+        list(0, "COMMIT", said(failure.get()));
         kept =
             failure.get().kind() == Failure.Kind.CONNECTION_LOST ? Kept.IN_DOUBT : Kept.ROLLED_BACK;
       }
     }
-    if (kept == Kept.ROLLED_BACK && target.rollback().isPresent()) {
-      kept = Kept.IN_DOUBT;
+    if (kept == Kept.ROLLED_BACK) {
+      var failure = target.rollback();
+      if (failure.isPresent()) {
+        list(0, "ROLLBACK", message(failure.get()));
+        kept = Kept.IN_DOUBT;
+      }
     }
     if (kept != Kept.IN_DOUBT) {
       target.end(); // a session that fails here is closed after the run anyway
@@ -483,16 +488,21 @@ public final class FileRun {
     }
   }
 
-  // The server's words, with its detail where it gives one; what HooriDB says where it gives none.
+  // The server's words, with its detail where it gives one.
   private static String message(Failure failure) {
-    var message = failure.message().isBlank()
+    var said = said(failure);
+    return failure.detail().isBlank() ? said : said + "\n" + failure.detail();
+  }
+
+  // The server's words without its detail; what HooriDB says where it gives none.
+  private static String said(Failure failure) {
+    return failure.message().isBlank()
         ? switch (failure.kind()) {
           case CANCELLED -> "Cancelled";
           case CONNECTION_LOST -> "The connection was lost";
           default -> "Failed";
         }
         : failure.message();
-    return failure.detail().isBlank() ? message : message + "\n" + failure.detail();
   }
 
   /**
@@ -573,8 +583,20 @@ public final class FileRun {
     }
 
     @Override
+    // Its failure's words withheld in the log, as a deferred constraint's may quote a row.
     public Optional<Failure> commit() {
-      return step(Journal.COMMIT, connection::commit);
+      try {
+        Journal.callWithheld(
+            Purpose.TRANSACTION,
+            Journal.COMMIT,
+            () -> Query.within(connection, provider, Execution.ENDING, () -> {
+              connection.commit();
+              return null;
+            }));
+        return Optional.empty();
+      } catch (QueryException e) {
+        return Optional.of(failure(e));
+      }
     }
 
     @Override

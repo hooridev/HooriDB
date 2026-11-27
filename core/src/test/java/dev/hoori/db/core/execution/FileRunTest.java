@@ -147,6 +147,21 @@ class FileRunTest {
     assertEquals(FileRun.Kept.ROLLED_BACK, notCommitted.transaction());
     assertEquals(
         new FileRun.Failed(0, "COMMIT", "syntax error"), notCommitted.failures().getFirst());
+
+    // A rollback that fails leaves the transaction in doubt, and says why.
+    var lost = Failure.of(Failure.Kind.CONNECTION_LOST, "I/O error");
+    var unended = new Session(Map.of("SELEC 2", WRONG)) {
+      @Override
+      public Optional<Failure> rollback() {
+        sent.add("rollback");
+        return Optional.of(lost);
+      }
+    };
+    var doubt = run(POSTGRESQL, "INSERT 1;\nSELEC 2;", new FileRun.Options(false, true), unended);
+    assertEquals(FileRun.Kept.IN_DOUBT, doubt.transaction());
+    assertEquals(
+        new FileRun.Failed(0, "ROLLBACK", "I/O error"), doubt.failures().getLast());
+    assertEquals(List.of("begin", "INSERT 1", "SELEC 2", "rollback"), unended.sent);
   }
 
   @Test
