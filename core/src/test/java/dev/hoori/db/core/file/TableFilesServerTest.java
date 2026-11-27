@@ -186,8 +186,18 @@ class TableFilesServerTest {
         Files.writeString(file, "id,name\n1,a\n2,b\n1,again\n3\n4,\n5,e\n");
         var options = new Inserts.Options(true, 2, Inserts.Commit.ONCE, Inserts.OnError.SKIP);
 
-        var skipped = load(connection, provider, table, columns, file, options);
+        var sent = new CopyOnWriteArrayList<Sent>();
+        var skipped = Journal.recording(
+            sent::add, () -> load(connection, provider, table, columns, file, options));
         assertEquals(new Inserts.Count(6, 3, 3, 3), skipped.count());
+        // Each savepoint is let go of, also one rolled back to, so that none is left for the
+        // next to nest in.
+        var calls = sent.stream().map(Sent::text).toList();
+        assertTrue(calls.contains(Journal.ROLLBACK_TO_SAVEPOINT), calls.toString());
+        assertEquals(
+            calls.stream().filter(Journal.SAVEPOINT::equals).count(),
+            calls.stream().filter(Journal.RELEASE_SAVEPOINT::equals).count(),
+            calls.toString());
         assertNull(skipped.stoppedAt());
         assertEquals(
             List.of(4L, 5L, 6L),

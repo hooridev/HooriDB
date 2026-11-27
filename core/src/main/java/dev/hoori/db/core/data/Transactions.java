@@ -70,18 +70,23 @@ final class Transactions {
         }));
   }
 
-  /** Takes back what was done since the savepoint, an interrupt or not, within the bound. */
+  /**
+   * Takes back what was done since the savepoint and lets go of it, an interrupt or not, within
+   * the bound: a rollback keeps the savepoint, under which PostgreSQL would nest the next one.
+   */
   static void rollBack(
       Connection connection, Provider provider, Purpose purpose, Savepoint savepoint)
       throws QueryException {
-    Query.within(
-        connection,
-        provider,
-        Execution.ENDING,
-        () -> Journal.call(purpose, Journal.ROLLBACK_TO_SAVEPOINT, () -> {
-          connection.rollback(savepoint);
-          return null;
-        }));
+    Query.within(connection, provider, Execution.ENDING, () -> {
+      Journal.call(purpose, Journal.ROLLBACK_TO_SAVEPOINT, () -> {
+        connection.rollback(savepoint);
+        return null;
+      });
+      return Journal.call(purpose, Journal.RELEASE_SAVEPOINT, () -> {
+        connection.releaseSavepoint(savepoint);
+        return null;
+      });
+    });
   }
 
   /**
