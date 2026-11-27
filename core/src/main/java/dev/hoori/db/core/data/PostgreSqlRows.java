@@ -37,6 +37,8 @@ import java.util.function.Function;
 /** How PostgreSQL's tables and results are read, with pgjdbc. */
 public final class PostgreSqlRows extends RowsDialect {
 
+  private static final String NUM_NULLS = "pg_catalog.num_nulls(";
+
   // PostgreSQL's built-in types, by the OIDs it gives them for good; a user's type may have any of
   // their names.
   private static final int BOOL = 16;
@@ -405,7 +407,7 @@ public final class PostgreSqlRows extends RowsDialect {
   // num_nulls(), as IS NULL holds for a composite whose fields are all NULL and concat() gives ''.
   @Override
   String unchanged(String column, Object value, Function<Object, String> parameter) {
-    var nulls = "pg_catalog.num_nulls(" + column + ") " + keyEquality();
+    var nulls = NUM_NULLS + column + ") " + keyEquality();
     if (value == null) {
       return nulls + " 1";
     }
@@ -448,7 +450,7 @@ public final class PostgreSqlRows extends RowsDialect {
       return new Rows.Read(
           Rows.field(source, kind),
           source.sql(),
-          List.of(text, "pg_catalog.num_nulls(" + source.sql() + ")"),
+          List.of(text, NUM_NULLS + source.sql() + ")"),
           (rows, index) -> rows.getInt(index + 1) == 1 ? null : rows.getString(index));
     }
     return new Rows.Read(
@@ -457,7 +459,7 @@ public final class PostgreSqlRows extends RowsDialect {
         List.of(
             "pg_catalog.substr(" + text + ", 1, " + (LIMIT + 1) + ")",
             "pg_catalog.octet_length(" + text + ")",
-            "pg_catalog.num_nulls(" + source.sql() + ")"),
+            NUM_NULLS + source.sql() + ")"),
         (rows, index) ->
             rows.getInt(index + 2) == 1 ? null : Rows.cut(rows.getString(index), rows, index + 1));
   }

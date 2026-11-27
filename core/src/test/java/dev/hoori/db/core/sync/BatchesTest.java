@@ -98,7 +98,7 @@ class BatchesTest {
   }
 
   // Both tables read anew, a row a portion, counting the reads.
-  private static Batches.Reads reads(int[] reads) {
+  private static Batches.Reads<Exception> reads(int[] reads) {
     var pairing = ((Pairing.Paired) Pairing.of(
             SOURCE,
             List.of(

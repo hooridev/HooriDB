@@ -170,7 +170,10 @@ public final class KeyedRead {
       case Float x -> x;
       default -> 0;
     };
-    return Double.isNaN(d) ? 2 : Double.isInfinite(d) ? (int) Math.signum(d) : 0;
+    if (Double.isNaN(d)) {
+      return 2;
+    }
+    return Double.isInfinite(d) ? (int) Math.signum(d) : 0;
   }
 
   /** The number as a decimal; a finite one of floating point as the shortest text that is it. */

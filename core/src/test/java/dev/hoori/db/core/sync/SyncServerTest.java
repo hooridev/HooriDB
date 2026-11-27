@@ -328,7 +328,7 @@ class SyncServerTest {
   }
 
   // Both tables read anew on the connections, two rows a portion.
-  private static Batches.Reads reads(
+  private static Batches.Reads<Exception> reads(
       Provider provider, Pairing pairing, Connection mine, Connection theirs) {
     return () -> {
       var sourceRows = new Execution(

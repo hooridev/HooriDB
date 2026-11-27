@@ -7,6 +7,7 @@ import static dev.hoori.db.app.CatalogTreeTest.open;
 import static dev.hoori.db.app.MonitorTabTest.line;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.App;
@@ -234,7 +235,7 @@ class SyncTabTest {
     assertFalse(line(tree, "label=\"Compare\"").endsWith("disabled"), tree);
 
     var keyedOutline = OUTLINE.replace("unkeyed\n      id:", "unkeyed\n      *id:");
-    assertFalse(keyedOutline.equals(OUTLINE));
+    assertNotEquals(OUTLINE, keyedOutline);
     c.servers.serve(HOST, Provider.POSTGRESQL, "16.4", keyedOutline);
     c.servers.values(HOST + "/shop.public.unkeyed", List.of(Arrays.asList(1L, "new")));
     c.run(app, COMPARE + "frame\nframe\nsnap keyed\n");
@@ -320,8 +321,16 @@ class SyncTabTest {
     assertEquals(4, c.servers.rowsOf(COPY).size());
   }
 
-  static final String APPLY = "press role=button label=\"Apply…\"\nframe\nadvance 1\nframe\n"
-      + "press role=button label=\"Apply\"\nframe\nadvance 1\nframe\n";
+  static final String APPLY = """
+      press role=button label="Apply…"
+      frame
+      advance 1
+      frame
+      press role=button label="Apply"
+      frame
+      advance 1
+      frame
+      """;
 
   // The changes written once the source compared again: orders' rows in orders_copy.
   private void assertApplied() {
@@ -526,7 +535,7 @@ class SyncTabTest {
     CatalogTreeTest.eventually(() -> c.servers.calls.contains("close scan " + ORDERS));
     var notices = app.state().notices;
     for (int i = 0; i < 50 && notices.isEmpty(); i++) {
-      Thread.sleep(20);
+      java.util.concurrent.locks.LockSupport.parkNanos(20_000_000);
       c.run(app, "await\nframe\n");
     }
     assertEquals(1, notices.size(), notices.toString());

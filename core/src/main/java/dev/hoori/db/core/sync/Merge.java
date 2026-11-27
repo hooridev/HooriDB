@@ -69,7 +69,7 @@ public final class Merge {
       if (mine == null && theirs == null) {
         return null;
       }
-      int by = mine == null ? 1 : theirs == null ? -1 : compare(mine, theirs);
+      int by = order(mine, theirs);
       if (by < 0) {
         onlyInSource++;
         return new Difference.OnlyInSource(source.take());
@@ -80,19 +80,36 @@ public final class Merge {
       }
       source.take();
       target.take();
-      var cells = new ArrayList<Pairing.Pair>();
-      for (var pair : pairing.columns()) {
-        if (!same(mine.get(pair.source()), theirs.get(pair.target()))) {
-          cells.add(pair);
-        }
-      }
-      if (cells.isEmpty()) {
-        equal++;
-      } else {
-        different++;
-        return new Difference.Different(mine, theirs, cells);
+      var different = paired(mine, theirs);
+      if (different != null) {
+        return different;
       }
     }
+  }
+
+  // The rows of one key: where a compared column's values differ, their difference, else null,
+  // counted as equal.
+  private Difference.Different paired(List<Object> mine, List<Object> theirs) {
+    var cells = new ArrayList<Pairing.Pair>();
+    for (var pair : pairing.columns()) {
+      if (!same(mine.get(pair.source()), theirs.get(pair.target()))) {
+        cells.add(pair);
+      }
+    }
+    if (cells.isEmpty()) {
+      equal++;
+      return null;
+    }
+    different++;
+    return new Difference.Different(mine, theirs, cells);
+  }
+
+  // The order of the two rows' keys, where a side that has no row left comes after the other.
+  private int order(List<Object> mine, List<Object> theirs) {
+    if (mine == null) {
+      return 1;
+    }
+    return theirs == null ? -1 : compare(mine, theirs);
   }
 
   /** The pairing as the reads of both tables say their kinds. */

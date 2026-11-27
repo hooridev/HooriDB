@@ -3,6 +3,7 @@ package dev.hoori.db.core.sync;
 import dev.hoori.db.core.data.Change;
 import dev.hoori.db.core.data.Changes;
 import dev.hoori.db.core.data.Rows;
+import dev.hoori.db.core.query.QueryException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumMap;
@@ -46,19 +47,19 @@ public final class Batches {
 
   /** Opens a {@link Reading} of both tables, once a pass. */
   @FunctionalInterface
-  public interface Reads {
-    Reading open() throws Exception;
+  public interface Reads<E extends Exception> {
+    Reading open() throws E;
   }
 
   /** Where the batches go: each written, or to a script. */
   @FunctionalInterface
-  public interface Sink {
+  public interface Sink<E extends Exception> {
 
     /**
      * Takes the batch, of changes of one kind: empty where it was taken, else what ended the
      * changes, as a {@link Changes.Outcome.Missed} row, after which nothing more is handed on.
      */
-    Optional<Changes.Outcome> take(Changes batch) throws Exception;
+    Optional<Changes.Outcome> take(Changes batch) throws E;
   }
 
   /** Told after each difference: what the pass read so far, and the changes handed on in all. */
@@ -80,72 +81,119 @@ public final class Batches {
    * Hands on the changes that the choice takes, in batches of at most {@code rows} changes, in the
    * order the class says, reading the tables once a pass.
    *
-   * @throws Exception as the reads or the sink failed, or {@link CompareException} as the merge
-   *     did
+   * @throws E as the reads or the sink failed
+   * @throws QueryException where a cursor of the merge failed
+   * @throws InterruptedException where the thread was interrupted
+   * @throws CompareException as the merge did
    */
-  public static Made make(Reads reads, Choice choice, int rows, Sink sink, Progress progress)
-      throws Exception {
+  public static <E extends Exception> Made make(
+      Reads<E> reads, Choice choice, int rows, Sink<E> sink, Progress progress)
+      throws E, QueryException, InterruptedException, CompareException {
     var steps = Arrays.stream(Step.values()).filter(step -> step.taken(choice)).toList();
-    long made = 0;
+    var handing = new Handing<>(sink);
     while (true) {
-      var first = steps.isEmpty() ? null : steps.getFirst();
-      var batch = new Batch(rows);
-      var held = new Batch(rows);
-      boolean fits = true;
-      Tally tally;
+      var pass = new Pass(steps.isEmpty() ? null : steps.getFirst(), rows);
       Pairing pairing;
+      Tally tally;
       try (var reading = reads.open()) {
         var merge = reading.merge();
         pairing = merge.pairing();
-        for (var d = merge.next(); d != null; d = merge.next()) {
-          var change = pairing.change(d, choice).orElse(null);
-          if (change != null && Step.of(change) == first) {
-            batch.add(change);
-            if (batch.full()) {
-              var ended = sink.take(pairing.changes(batch.take()));
-              if (ended.isPresent()) {
-                return new Made(merge.tally(), made, ended);
-              }
-              made += batch.taken;
-            }
-          } else if (change != null && fits) {
-            held.add(change);
-            if (held.over()) {
-              fits = false;
-              held.take();
-            }
-          }
-          progress.read(merge.tally(), made);
+        if (!pass.read(merge, choice, handing, progress)) {
+          return handing.made(merge.tally());
         }
         tally = merge.tally();
-        if (!batch.empty()) {
-          var ended = sink.take(pairing.changes(batch.take()));
-          if (ended.isPresent()) {
-            return new Made(tally, made, ended);
-          }
-          made += batch.taken;
-        }
       }
       var later = steps.isEmpty() ? List.<Step>of() : steps.subList(1, steps.size());
-      if (fits) {
-        var kinds = held.byStep();
-        for (var step : later) {
-          var of = kinds.getOrDefault(step, List.of());
-          if (!of.isEmpty()) {
-            var ended = sink.take(pairing.changes(of));
-            if (ended.isPresent()) {
-              return new Made(tally, made, ended);
-            }
-            made += of.size();
-          }
-        }
-        return new Made(tally, made, Optional.empty());
+      if (pass.fits) {
+        handing.handHeld(pairing, pass.held.byStep(), later);
+        return handing.made(tally);
       }
-      var found = tally;
-      steps = later.stream().filter(step -> step.found(found) > 0).toList();
+      steps = later.stream().filter(step -> step.found(tally) > 0).toList();
       if (steps.isEmpty()) {
-        return new Made(tally, made, Optional.empty());
+        return handing.made(tally);
       }
+    }
+  }
+
+  // Hands batches on to the sink and counts the changes it took, until it ends them.
+  private static final class Handing<E extends Exception> {
+    private final Sink<E> sink;
+    private long made;
+    private Optional<Changes.Outcome> ended = Optional.empty();
+
+    Handing(Sink<E> sink) {
+      this.sink = sink;
+    }
+
+    // Hands the changes on; false where the sink ended them.
+    boolean hand(Pairing pairing, List<Change> changes) throws E {
+      ended = sink.take(pairing.changes(changes));
+      if (ended.isPresent()) {
+        return false;
+      }
+      made += changes.size();
+      return true;
+    }
+
+    // The changes held of the later kinds, in their order, until the sink ends them.
+    void handHeld(Pairing pairing, Map<Step, List<Change>> kinds, List<Step> later) throws E {
+      for (var step : later) {
+        var of = kinds.getOrDefault(step, List.of());
+        if (!of.isEmpty() && !hand(pairing, of)) {
+          return;
+        }
+      }
+    }
+
+    Made made(Tally tally) {
+      return new Made(tally, made, ended);
+    }
+  }
+
+  // One read of both tables: the changes of its first kind handed on in batches as they come,
+  // those of the later kinds held while they fit in one batch.
+  private static final class Pass {
+    private final Step first;
+    private final Batch batch;
+    private final Batch held;
+    private boolean fits = true;
+
+    Pass(Step first, int rows) {
+      this.first = first;
+      this.batch = new Batch(rows);
+      this.held = new Batch(rows);
+    }
+
+    // Reads the merge to its end; false where the sink ended the changes.
+    <E extends Exception> boolean read(
+        Merge merge, Choice choice, Handing<E> handing, Progress progress)
+        throws E, QueryException, InterruptedException, CompareException {
+      var pairing = merge.pairing();
+      for (var d = merge.next(); d != null; d = merge.next()) {
+        var change = pairing.change(d, choice).orElse(null);
+        if (change != null && !take(change, pairing, handing)) {
+          return false;
+        }
+        progress.read(merge.tally(), handing.made);
+      }
+      return batch.empty() || handing.hand(pairing, batch.take());
+    }
+
+    // Takes a change into the batch, which goes on when full, or holds it while the held fit.
+    private <E extends Exception> boolean take(Change change, Pairing pairing, Handing<E> handing)
+        throws E {
+      if (Step.of(change) == first) {
+        batch.add(change);
+        return !batch.full() || handing.hand(pairing, batch.take());
+      }
+      if (fits) {
+        held.add(change);
+        if (held.over()) {
+          fits = false;
+          held.take();
+        }
+      }
+      return true;
     }
   }
 
@@ -186,7 +234,6 @@ public final class Batches {
     private final int rows;
     private List<Change> changes = new ArrayList<>();
     private long characters;
-    private int taken; // how many the last take() took
 
     Batch(int rows) {
       this.rows = rows;
@@ -218,7 +265,6 @@ public final class Batches {
 
     List<Change> take() {
       var all = changes;
-      taken = all.size();
       changes = new ArrayList<>();
       characters = 0;
       return all;

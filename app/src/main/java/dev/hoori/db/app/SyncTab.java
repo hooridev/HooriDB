@@ -223,7 +223,7 @@ final class SyncTab implements Tab {
     if (sides == null) {
       return;
     }
-    start(s, Running.PAIRING, progress -> Sync.pair(sides), got -> found = got, null);
+    start(s, Running.PAIRING, report -> Sync.pair(sides), got -> found = got, null);
   }
 
   /** Compares the rows of both tables anew, pairing them first. */
@@ -237,7 +237,7 @@ final class SyncTab implements Tab {
     start(
         s,
         Running.COMPARING,
-        progress -> Sync.compare(sides, provider, progress),
+        report -> Sync.compare(sides, provider, report),
         got -> {
           switch (got) {
             case Sync.Compared c -> {
@@ -260,7 +260,7 @@ final class SyncTab implements Tab {
   }
 
   /** Opens the dialog of the statements that applying makes, of the differences kept. */
-  void openPreview(State s) {
+  void openPreview() {
     if (compared == null || running != null || !choice.any()) {
       return;
     }
@@ -296,7 +296,7 @@ final class SyncTab implements Tab {
     start(
         s,
         Running.APPLYING,
-        progress -> Sync.apply(sides, lane, pairing, chosen, commits, progress),
+        report -> Sync.apply(sides, lane, pairing, chosen, commits, report),
         got -> applied(s, got),
         new Late<>() {
           @Override
@@ -304,8 +304,8 @@ final class SyncTab implements Tab {
             if (commits.begun()) {
               s.notice(
                   connection,
-                  COMMIT,
-                  "Wrote " + count(got.written(), "change") + " to " + table(to) + " after its"
+                  COMMIT_STATEMENT,
+                  "Wrote " + count(got.written(), CHANGE) + " to " + table(to) + " after its"
                       + " comparison closed.",
                   false,
                   null);
@@ -315,7 +315,7 @@ final class SyncTab implements Tab {
           @Override
           public void failed(Exception error) {
             if (commits.begun()) {
-              s.notice(connection, COMMIT, commitFailed(s, to, error), true, null);
+              s.notice(connection, COMMIT_STATEMENT, commitFailed(s, to, error), true, null);
             }
           }
         });
@@ -324,14 +324,17 @@ final class SyncTab implements Tab {
     compareAfter = true;
   }
 
-  private static final String COMMIT = "COMMIT";
+  private static final String COMMIT_STATEMENT = "COMMIT";
+  private static final String CHANGE = "change";
+  private static final String DIFFERENCE = "difference";
+  private static final String NOT_CONNECTED = "Not connected";
 
   private void applied(State s, Sync.Applied applied) {
     commit = null;
     closeWriter(s);
     switch (applied.outcome()) {
       case Changes.Outcome.Committed _ -> {
-        say(s, "Wrote " + count(applied.written(), "change") + " to " + table(target) + ".");
+        say(s, "Wrote " + count(applied.written(), CHANGE) + " to " + table(target) + ".");
         if (compareAfter) {
           compare(s);
         }
@@ -422,7 +425,7 @@ final class SyncTab implements Tab {
     start(
         s,
         Running.SCRIPTING,
-        progress -> Sync.script(sides, pairing, chosen, provider, file, publishing, progress),
+        report -> Sync.script(sides, pairing, chosen, provider, file, publishing, report),
         got -> {
           commit = null;
           say(s, "Saved the script to " + file.getFileName() + ".");
@@ -551,7 +554,7 @@ final class SyncTab implements Tab {
         new Problem(
             "Connection lost",
             "A session of the comparison was lost. Nothing was written that was not committed.");
-      case ConnectionException e -> new Problem("Not connected", words(s, target, e.getMessage()));
+      case ConnectionException e -> new Problem(NOT_CONNECTED, words(s, target, e.getMessage()));
       case IOException e ->
         new Problem("The file could not be written", String.valueOf(e.getMessage()));
       default -> new Problem("It failed", words(s, target, String.valueOf(error.getMessage())));
@@ -561,10 +564,10 @@ final class SyncTab implements Tab {
   // The server's words, withheld where they hold the password of either side's connection: a
   // failure may be the source's as well as the target's.
   private String words(State s, Target to, String text) {
-    var said = CatalogTree.words(s.catalog.live(id), text);
+    var withheld = CatalogTree.words(s.catalog.live(id), text);
     return to == null || to.id().equals(id)
-        ? said
-        : CatalogTree.words(s.catalog.live(to.id()), said);
+        ? withheld
+        : CatalogTree.words(s.catalog.live(to.id()), withheld);
   }
 
   private static boolean gone(QueryException e) {
@@ -622,7 +625,7 @@ final class SyncTab implements Tab {
   private static Problem notConnected(State s, UUID id) {
     var profile = s.profile(id);
     return new Problem(
-        "Not connected",
+        NOT_CONNECTED,
         "Connect " + (profile == null ? "the connection" : State.name(profile))
             + " in Workspace to compare its table.");
   }
@@ -638,7 +641,7 @@ final class SyncTab implements Tab {
       closeWriter(s);
     } else if (running != null) {
       stop();
-      problem = new Problem("Not connected", "A connection of the comparison ended.");
+      problem = new Problem(NOT_CONNECTED, "A connection of the comparison ended.");
     }
     closeSessions(s);
   }
@@ -757,7 +760,7 @@ final class SyncTab implements Tab {
         .child(top)
         .child(line == null ? Divider.divider() : line)
         .child(tables(s, t).key("tables"));
-    var note = note(s);
+    var note = note();
     if (note != null) {
       content.child(col().padding(t.space().m()).shrink(0).child(note).key("note"));
     }
@@ -797,13 +800,17 @@ final class SyncTab implements Tab {
   private El tables(State s, Theme t) {
     var profile = s.profile(id);
     // Listed only while the chooser is open: they can be many, and each build would sort them.
-    var candidates =
-        chooser.isOpen() ? candidates(s) : target == null ? List.<Target>of() : List.of(target);
-    El chooser = ComboBox.comboBox(
+    List<Target> candidates;
+    if (chooser.isOpen()) {
+      candidates = candidates(s);
+    } else {
+      candidates = target == null ? List.of() : List.of(target);
+    }
+    El combo = ComboBox.comboBox(
             candidates,
             target,
             x -> label(s, x),
-            this.chooser,
+            chooser,
             running == Running.APPLYING ? null : x -> choose(s, x))
         .key("target")
         .label("Target table")
@@ -829,11 +836,11 @@ final class SyncTab implements Tab {
                             "No other table of a connected connection of this kind is read yet:"
                                 + " open its schema in Workspace.")
                         .key("no-target")
-                    : chooser));
+                    : combo));
   }
 
   // What stands in the way, or how the tables pair; null for nothing to say.
-  private El note(State s) {
+  private El note() {
     if (problem != null) {
       return Callout.callout(
               Callout.Kind.DANGER,
@@ -926,7 +933,7 @@ final class SyncTab implements Tab {
         .child(Card.spacer());
     var why = cannotApply(s);
     El apply =
-        button(SECONDARY, "Apply…", why == null ? () -> openPreview(s) : null).key("apply");
+        button(SECONDARY, "Apply…", why == null ? this::openPreview : null).key("apply");
     choices.child(why == null ? apply : Tooltip.tooltip(apply, why));
     choices.child(button(
             SECONDARY,
@@ -949,8 +956,8 @@ final class SyncTab implements Tab {
   // target's, with the cells that differ marked.
   private El differences(State s, App<State> app) {
     var pairing = compared.pairing();
-    var lines = this.lines;
-    if (lines.isEmpty()) {
+    var shown = lines;
+    if (shown.isEmpty()) {
       return EmptyState.emptyState(
           Symbol.CHECKMARK_CIRCLE,
           "The rows are equal",
@@ -966,7 +973,7 @@ final class SyncTab implements Tab {
         DataGrid.Align.LEFT,
         false,
         false,
-        row -> lines.get(row).what()));
+        row -> shown.get(row).what()));
     if (widths.length != pairing.columns().size()) {
       widths = new float[pairing.columns().size()];
       Arrays.fill(widths, -1);
@@ -979,7 +986,7 @@ final class SyncTab implements Tab {
           ? compared.fields().get(pair.source()).kind()
           : null;
       columns.add(
-          Cells.column(column, kind, widths, c, row -> lines.get(row).values().get(at), s.zone));
+          Cells.column(column, kind, widths, c, row -> shown.get(row).values().get(at), s.zone));
     }
     var options = DataGrid.options()
         .select(selection)
@@ -991,11 +998,11 @@ final class SyncTab implements Tab {
           }
         })
         .status(
-            row -> lines.get(row).status(),
-            (row, column) -> column > 0 && lines.get(row).cells().contains(column - 1)
+            row -> shown.get(row).status(),
+            (row, column) -> column > 0 && shown.get(row).cells().contains(column - 1)
                 ? DataGrid.Status.CHANGED
                 : DataGrid.Status.UNCHANGED);
-    return DataGrid.dataGrid(columns, lines.size(), options)
+    return DataGrid.dataGrid(columns, shown.size(), options)
         .key("differences-grid")
         .label("Differences")
         .grow(1);
@@ -1047,9 +1054,9 @@ final class SyncTab implements Tab {
       var read = "Read " + count(tally.sourceRows(), "row") + " of the source and "
           + count(tally.targetRows(), "row") + " of the target";
       return switch (progress.stage()) {
-        case READING -> read + ", " + count(tally.differences(), "difference") + " so far";
-        case WRITING -> read + ", " + count(progress.written(), "change") + " written";
-        case COMMITTING -> "Committing " + count(progress.written(), "change") + "…";
+        case READING -> read + ", " + count(tally.differences(), DIFFERENCE) + " so far";
+        case WRITING -> read + ", " + count(progress.written(), CHANGE) + " written";
+        case COMMITTING -> "Committing " + count(progress.written(), CHANGE) + "…";
       };
     }
     if (running != null) {
@@ -1064,7 +1071,7 @@ final class SyncTab implements Tab {
     return count(tally.sourceRows(), "row") + " in the source, " + count(tally.targetRows(), "row")
         + " in the target"
         + (shown < all
-            ? "; showing the first " + count(shown, "difference") + " of "
+            ? "; showing the first " + count(shown, DIFFERENCE) + " of "
                 + String.format(Locale.ROOT, "%,d", all)
             : "");
   }
@@ -1077,11 +1084,10 @@ final class SyncTab implements Tab {
     Theme t = Theme.CURRENT.get();
     var provider = provider(s);
     long all = compared.tally().taken(choice);
-    var summary = count(all, "change") + " will be written to " + table(target)
+    var summary = count(all, CHANGE) + " will be written to " + table(target)
         + " in one transaction, after the tables are compared again.";
     if (preview.statements < all) {
-      summary +=
-          " Those of the first " + count(compared.kept().size(), "difference") + " are shown.";
+      summary += " Those of the first " + count(compared.kept().size(), DIFFERENCE) + " are shown.";
     }
     El code = CodeEditor.embedded(CodeEditor.codeEditor(
             app, preview.sql, preview.editor, provider == null ? null : Syntax.of(provider), null)
@@ -1091,8 +1097,7 @@ final class SyncTab implements Tab {
         .w(2 * ConnectionDialog.width())
         .gap(t.space().m())
         .child(Label.label(summary).wrapText())
-        .child(code.h(
-                Math.min(10, Math.max(3, preview.statements + 1)) * t.size().control())
+        .child(code.h(Math.clamp(preview.statements + 1L, 3, 10) * t.size().control())
             .wFull());
     El apply = button(PRIMARY, "Apply", () -> apply(s)).key("sync-apply");
     El cancel =

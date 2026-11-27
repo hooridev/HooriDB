@@ -158,14 +158,11 @@ public final class Execution implements AutoCloseable {
       return refused;
     }
     // Sent with its first portion, which is what the server was asked for.
-    return statement != null
-        ? portion(count)
-        : Journal.sql(
-            provider,
-            keyed == null ? Purpose.STATEMENT : Purpose.ROWS,
-            sql,
-            Execution::outcome,
-            () -> portion(count));
+    if (statement != null) {
+      return portion(count);
+    }
+    var purpose = keyed == null ? Purpose.STATEMENT : Purpose.ROWS;
+    return Journal.sql(provider, purpose, sql, Execution::outcome, () -> portion(count));
   }
 
   /**

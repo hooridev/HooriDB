@@ -634,9 +634,9 @@ final class State {
             || old.port() != profile.port()
             || old.srv() != profile.srv()
             || !database(old).equals(database(profile)))) {
-      var closing = new ArrayList<Tab>(tables(profile.id()));
-      closing.addAll(comparisons(profile.id()));
-      close(closing);
+      var gone = new ArrayList<Tab>(tables(profile.id()));
+      gone.addAll(comparisons(profile.id()));
+      close(gone);
     }
     if (old == null
         && workspace.fits(dialogs.placing, profile)) { // a folder gone meanwhile: the top

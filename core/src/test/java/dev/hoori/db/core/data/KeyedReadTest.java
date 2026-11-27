@@ -1,6 +1,7 @@
 package dev.hoori.db.core.data;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.math.BigDecimal;
@@ -87,6 +88,6 @@ class KeyedReadTest {
     var date = java.time.LocalDate.of(2024, 1, 1);
     int by = KeyedRead.compare("0000-00-00", date);
     assertEquals(-Integer.signum(by), Integer.signum(KeyedRead.compare(date, "0000-00-00")));
-    assertTrue(by != 0);
+    assertNotEquals(0, by);
   }
 }
