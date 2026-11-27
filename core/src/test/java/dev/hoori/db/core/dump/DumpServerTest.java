@@ -840,7 +840,7 @@ class DumpServerTest {
         MYSQL_TRIGGER,
         "INSERT INTO parent (name) VALUES ('ada'), ('it''s \\\\ quoted'), ('Grüße ✓'), ('')",
         "INSERT INTO child (parent_id, note) VALUES (1, 'first'), (2, NULL),"
-            + " (2, 'line\\nbreak and \\0 nul')",
+            + " (2, 'line\\nbreak and \\0 nul and \\Z sub')",
         "UPDATE parent SET child_id = 1 WHERE id = 2",
         "DELETE FROM child WHERE id = 3",
         "INSERT INTO typed (id, bits, bl, d, dt, ts, t, y, j, e, s, f, dbl, amount, u, txt, g)"

@@ -324,9 +324,9 @@ abstract class MySqlFamilyRows extends RowsDialect {
     }
   }
 
-  // A text as the servers read it unless their SQL mode says NO_BACKSLASH_ESCAPES, a NUL as an
-  // escape that clients read in any text, and a moment with its offset, as MySQL reads it, which
-  // tells that it is in UTC.
+  // A text as the servers read it unless their SQL mode says NO_BACKSLASH_ESCAPES, a NUL and a
+  // Control-Z as escapes that clients read in any text, and a moment with its offset, as MySQL
+  // reads it, which tells that it is in UTC.
   @Override
   public String literal(Object value) {
     return switch (value) {
@@ -340,7 +340,12 @@ abstract class MySqlFamilyRows extends RowsDialect {
       case Binary binary -> "X'" + HexFormat.of().formatHex(binary.bytes()) + "'";
       default ->
         "'"
-            + Rows.text(value, false).replace("\\", "\\\\").replace("'", "''").replace("\0", "\\0")
+            + Rows.text(value, false)
+                .replace("\\", "\\\\")
+                .replace("'", "''")
+                .replace("\0", "\\0")
+                // Windows' mysql client ends redirected input at a Control-Z.
+                .replace("\032", "\\Z")
             + "'";
     };
   }
