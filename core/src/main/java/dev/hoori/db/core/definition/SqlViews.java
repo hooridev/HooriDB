@@ -1,7 +1,9 @@
 package dev.hoori.db.core.definition;
 
 import dev.hoori.db.core.catalog.Table;
+import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
@@ -14,12 +16,14 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * The views of a server of SQL, on a JDBC connection on the view's database, in auto-commit as
- * {@link dev.hoori.db.core.connect.Connector} opens it: read as {@link DefinitionDialect} reads
- * them, and changed by the statements of a {@link ViewChange}, each sent as it is, without escape
- * processing. What it sends goes through {@link Journal} as {@link Purpose#DEFINITION}. Each call
- * runs through {@link Query}: an interrupt ends it with {@link QueryException.Failure#CANCELLED},
- * or {@link QueryException.Failure#ABORTED} where the connection had to be given up.
+ * The views of a server of SQL, on a JDBC connection in auto-commit, as {@link
+ * dev.hoori.db.core.connect.Connector} opens it: read as {@link DefinitionDialect} and {@link
+ * ViewDialect} read them, and changed by the statements of a {@link ViewChange}, each sent as it
+ * is, without escape processing. A connection to another database of a server without schemas is
+ * put on the view's for the call, which its definition names its objects without, and back after.
+ * What it sends goes through {@link Journal} as {@link Purpose#DEFINITION}. Each call runs through
+ * {@link Query}: an interrupt ends it with {@link QueryException.Failure#CANCELLED}, or {@link
+ * QueryException.Failure#ABORTED} where the connection had to be given up.
  *
  * @param readOnly whether the connection's profile is read-only, which changes nothing here and
  *     sends nothing for a change
@@ -27,25 +31,32 @@ import java.util.concurrent.atomic.AtomicReference;
 public record SqlViews(Connection connection, Provider provider, boolean readOnly)
     implements Views {
 
+  private interface Call<T> {
+    T call(Sql sql) throws QueryException;
+  }
+
   @Override
   public ViewDefinition read(Table view) throws QueryException {
-    if (view.kind() != Table.Kind.VIEW && view.kind() != Table.Kind.MATERIALIZED) {
+    if (!view.kind().view()) {
       throw new IllegalArgumentException(view.name() + " is no view");
     }
-    var dialect = provider.dialect().definitions();
-    return Sql.as(Purpose.DEFINITION, () -> {
-      requireOn(view);
-      dialect.begin(connection, provider);
+    var definitions = provider.dialect().definitions();
+    var views = provider.dialect().views();
+    return on(view, sql -> {
+      definitions.begin(sql);
       try {
         var item = Item.of(view.container(), Item.Kind.VIEW, view.name());
-        var definition = dialect.define(connection, provider, List.of(item)).getFirst();
+        var definition =
+            definitions.define(sql, List.of(item), DefinitionDialect.Mode.EDIT).getFirst();
         return new ViewDefinition(
             view,
             definition,
-            dialect.references(connection, provider, view),
-            dialect.refreshesConcurrently(connection, provider, view));
+            views.references(sql, view),
+            views.refreshesConcurrently(sql, view),
+            views.restore(sql, view),
+            views.unset(sql, view));
       } finally {
-        endQuietly(dialect);
+        endQuietly(definitions, sql);
       }
     });
   }
@@ -57,20 +68,22 @@ public record SqlViews(Connection connection, Provider provider, boolean readOnl
           QueryException.Failure.OTHER,
           "The connection is read-only, which changes no view: nothing was sent.");
     }
-    var dialect = provider.dialect().definitions();
-    return Sql.as(Purpose.DEFINITION, () -> {
-      requireOn(change.view());
+    var views = provider.dialect().views();
+    return on(change.view(), sql -> {
       try {
         if (change.transaction()) {
-          inTransaction(change.statements());
+          inTransaction(sql, change.statements());
         } else {
-          for (var sql : change.statements()) {
-            send(sql);
+          for (var statement : change.statements()) {
+            send(sql, statement);
           }
         }
       } catch (QueryException e) {
-        if (change.kind() == ViewChange.Kind.REPLACE && dialect.keepsColumns(e)) {
+        if (change.kind() == ViewChange.Kind.REPLACE && views.keepsColumns(e)) {
           return new KeepsColumns(e.detail());
+        }
+        if (change.kind() == ViewChange.Kind.DROP && views.dependedOn(e)) {
+          return new DependedOn(e.detail());
         }
         throw e;
       }
@@ -79,34 +92,28 @@ public record SqlViews(Connection connection, Provider provider, boolean readOnl
   }
 
   // All or none: a failure rolls back what went before it; either way auto-commit comes back on.
-  private void inTransaction(List<String> statements) throws QueryException {
-    Journal.call(
-        Sql.purpose(),
-        Journal.autoCommit(false),
-        () -> Query.run(connection, provider, () -> {
-          connection.setAutoCommit(false);
-          return null;
-        }));
+  private void inTransaction(Sql sql, List<String> statements) throws QueryException {
+    sql.call(Journal.autoCommit(false), () -> {
+      connection.setAutoCommit(false);
+      return null;
+    });
     try {
-      for (var sql : statements) {
-        send(sql);
+      for (var statement : statements) {
+        send(sql, statement);
       }
-      Journal.call(
-          Sql.purpose(),
-          Journal.COMMIT,
-          () -> Query.run(connection, provider, () -> {
-            connection.commit();
-            return null;
-          }));
+      sql.call(Journal.COMMIT, () -> {
+        connection.commit();
+        return null;
+      });
     } catch (QueryException e) {
       throw Sql.undone(
           e,
-          () -> Sql.ending(connection, provider, Journal.ROLLBACK, () -> {
+          () -> sql.ending(Journal.ROLLBACK, () -> {
             connection.rollback();
             return null;
           }));
     } finally {
-      Sql.ending(connection, provider, Journal.autoCommit(true), () -> {
+      sql.ending(Journal.autoCommit(true), () -> {
         connection.setAutoCommit(true);
         return null;
       });
@@ -114,27 +121,27 @@ public record SqlViews(Connection connection, Provider provider, boolean readOnl
   }
 
   // A plain statement, as the user's text says it: a prepared one would take a ? for a parameter.
-  private void send(String sql) throws QueryException {
+  private void send(Sql sql, String statement) throws QueryException {
     var running = new AtomicReference<Statement>();
     Journal.sql(
         provider,
-        Sql.purpose(),
-        sql,
+        sql.purpose(),
+        statement,
         done -> Outcome.DONE,
         () -> Query.run(
             connection,
             provider,
             () -> {
-              var statement = running.get();
-              if (statement != null) {
-                statement.cancel();
+              var sent = running.get();
+              if (sent != null) {
+                sent.cancel();
               }
             },
             () -> {
-              try (var statement = connection.createStatement()) {
-                running.set(statement);
-                statement.setEscapeProcessing(false);
-                return statement.execute(sql);
+              try (var sent = connection.createStatement()) {
+                running.set(sent);
+                sent.setEscapeProcessing(false);
+                return sent.execute(statement);
               }
             },
             ran -> false));
@@ -142,18 +149,32 @@ public record SqlViews(Connection connection, Provider provider, boolean readOnl
 
   // A failure to end a snapshot that was only read in changes nothing of what was read; a
   // connection it broke is found by its next call.
-  private void endQuietly(DefinitionDialect dialect) {
+  private static void endQuietly(DefinitionDialect dialect, Sql sql) {
     try {
-      dialect.end(connection, provider);
+      dialect.end(sql);
     } catch (QueryException _) {
       // As said.
     }
   }
 
-  // The session names the view's objects without its database on MariaDB and MySQL, and reads
-  // only its own database on PostgreSQL; in auto-commit, so that no transaction of the caller's
-  // is ended.
-  private void requireOn(Table view) throws QueryException {
+  // The session back on the database it was on.
+  private void back(Sql sql, String database) throws QueryException {
+    if (database != null) {
+      sql.ending(Journal.catalog(database), () -> {
+        connection.setCatalog(database);
+        return null;
+      });
+    }
+  }
+
+  /**
+   * The call on the view's database, in auto-commit, so that no transaction of the caller's is
+   * ended: on a server without schemas the session goes to that database for it and back after,
+   * as MariaDB and MySQL name the view's objects without it there; on one with schemas, which
+   * reads only its own database, it must be there.
+   */
+  private <T> T on(Table view, Call<T> call) throws QueryException {
+    var sql = new Sql(connection, provider, Purpose.DEFINITION);
     String current;
     boolean autoCommits;
     try {
@@ -162,13 +183,28 @@ public record SqlViews(Connection connection, Provider provider, boolean readOnl
     } catch (SQLException e) {
       throw Query.failure(connection, provider, e);
     }
-    var database = view.container().database().name();
-    if (!database.equals(current)) {
-      throw new IllegalArgumentException(
-          "A view of " + database + " on a connection to " + current);
-    }
     if (!autoCommits) {
       throw new IllegalArgumentException("A view's change on a connection with a transaction open");
     }
+    var database = view.container().database().name();
+    if (database.equals(current)) {
+      return call.call(sql);
+    }
+    if (provider.supports(Capability.SCHEMAS, ServerVersion.UNKNOWN)) {
+      throw new IllegalArgumentException(
+          "A view of " + database + " on a connection to " + current);
+    }
+    sql.call(Journal.catalog(database), () -> {
+      connection.setCatalog(database);
+      return null;
+    });
+    T result;
+    try {
+      result = call.call(sql);
+    } catch (QueryException e) {
+      throw Sql.undone(e, () -> back(sql, current));
+    }
+    back(sql, current);
+    return result;
   }
 }

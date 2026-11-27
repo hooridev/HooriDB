@@ -7,6 +7,7 @@ import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
 import dev.hoori.db.core.data.RowsDialect;
 import dev.hoori.db.core.definition.Definition;
+import dev.hoori.db.core.definition.DefinitionDialect.Mode;
 import dev.hoori.db.core.definition.Item;
 import dev.hoori.db.core.definition.Listed;
 import dev.hoori.db.core.definition.Sql;
@@ -194,16 +195,14 @@ public final class Dump {
    */
   public static List<Listed> list(Connection connection, Provider provider, Container container)
       throws QueryException {
-    requireConnectedTo(connection, provider, container.database());
-    var dialect = provider.dialect().definitions();
-    return Sql.as(Purpose.EXPORT, () -> {
-      Dump.begin(connection, provider);
-      try {
-        return dialect.list(connection, provider, container);
-      } finally {
-        endQuietly(connection, provider);
-      }
-    });
+    var sql = new Sql(connection, provider, Purpose.EXPORT);
+    requireConnectedTo(sql, container.database());
+    Dump.begin(sql);
+    try {
+      return provider.dialect().definitions().list(sql, container);
+    } finally {
+      endQuietly(sql);
+    }
   }
 
   /**
@@ -212,18 +211,16 @@ public final class Dump {
    */
   public static List<Definition> definitions(
       Connection connection, Provider provider, List<Item> items) throws QueryException {
-    var dialect = provider.dialect().definitions();
+    var sql = new Sql(connection, provider, Purpose.EXPORT);
     for (var item : items) {
-      requireConnectedTo(connection, provider, item.container().database());
+      requireConnectedTo(sql, item.container().database());
     }
-    return Sql.as(Purpose.EXPORT, () -> {
-      Dump.begin(connection, provider);
-      try {
-        return Order.sorted(dialect.define(connection, provider, items));
-      } finally {
-        endQuietly(connection, provider);
-      }
-    });
+    Dump.begin(sql);
+    try {
+      return Order.sorted(provider.dialect().definitions().define(sql, items, Mode.EXPORT));
+    } finally {
+      endQuietly(sql);
+    }
   }
 
   /**
@@ -238,7 +235,8 @@ public final class Dump {
   public static Written write(
       Connection connection, Provider provider, Choice choice, Path file, Progress progress)
       throws QueryException, IOException {
-    requireConnectedTo(connection, provider, choice.database());
+    var sql = new Sql(connection, provider, Purpose.EXPORT);
+    requireConnectedTo(sql, choice.database());
     var target = file.toAbsolutePath();
     var folder = target.getParent();
     var part = Files.createTempFile(folder, "." + target.getFileName() + "-", ".part");
@@ -246,16 +244,7 @@ public final class Dump {
     try {
       Writing.Counts written;
       try (var out = Files.newBufferedWriter(part, StandardCharsets.UTF_8)) {
-        var writing = new Writing(connection, provider, choice, out, progress);
-        written = Sql.as(Purpose.EXPORT, () -> {
-          try {
-            return writing.write();
-          } catch (IOException e) {
-            throw new UncheckedIOException(e); // one kind of failure through the binding
-          }
-        });
-      } catch (UncheckedIOException e) {
-        throw e.getCause();
+        written = new Writing(sql, choice, out, progress).write();
       }
       var bytes = Files.size(part);
       // The snapshot's end goes on after a cancel, which must not then find the file replaced.
@@ -275,9 +264,9 @@ public final class Dump {
 
   // A failure to end a snapshot that was only read in changes nothing of what was read; a
   // connection it broke is found by its next call.
-  private static void endQuietly(Connection connection, Provider provider) {
+  private static void endQuietly(Sql sql) {
     try {
-      provider.dialect().definitions().end(connection, provider);
+      sql.provider().dialect().definitions().end(sql);
     } catch (QueryException _) {
       // As said.
     }
@@ -286,21 +275,22 @@ public final class Dump {
   // The snapshot begins on a connection in auto-commit, as Connector opens it, and nowhere else:
   // where it fails, its dialect undoes it by ending the transaction, which would end one that
   // the caller had open.
-  private static void begin(Connection connection, Provider provider) throws QueryException {
+  private static void begin(Sql sql) throws QueryException {
     boolean autoCommits;
     try {
-      autoCommits = connection.getAutoCommit();
+      autoCommits = sql.connection().getAutoCommit();
     } catch (SQLException e) {
-      throw Query.failure(connection, provider, e);
+      throw Query.failure(sql.connection(), sql.provider(), e);
     }
     if (!autoCommits) {
       throw new IllegalArgumentException("An export on a connection with a transaction open");
     }
-    provider.dialect().definitions().begin(connection, provider);
+    sql.provider().dialect().definitions().begin(sql);
   }
 
-  static void requireConnectedTo(Connection connection, Provider provider, Database database)
-      throws QueryException {
+  static void requireConnectedTo(Sql sql, Database database) throws QueryException {
+    var provider = sql.provider();
+    var connection = sql.connection();
     if (provider.keepsDocuments()) {
       throw new IllegalArgumentException(provider.displayName() + " is no server of SQL");
     }
@@ -328,6 +318,7 @@ public final class Dump {
   // One export's writing, from the snapshot's start to its end.
   private static final class Writing {
 
+    private final Sql sql;
     private final Connection connection;
     private final Provider provider;
     private final DumpDialect dialect;
@@ -338,10 +329,10 @@ public final class Dump {
     private int objects;
     private long rows;
 
-    Writing(
-        Connection connection, Provider provider, Choice choice, Writer out, Progress progress) {
-      this.connection = connection;
-      this.provider = provider;
+    Writing(Sql sql, Choice choice, Writer out, Progress progress) {
+      this.sql = sql;
+      this.connection = sql.connection();
+      this.provider = sql.provider();
       this.dialect = provider.dialect().dump();
       this.choice = choice;
       this.out = out;
@@ -353,7 +344,7 @@ public final class Dump {
     private record Counts(int objects, long rows) {}
 
     Counts write() throws QueryException, IOException {
-      Dump.begin(connection, provider);
+      Dump.begin(sql);
       try {
         return written();
       } catch (QueryException e) {
@@ -363,7 +354,7 @@ public final class Dump {
         }
         throw e;
       } finally {
-        endQuietly(connection, provider);
+        endQuietly(sql);
       }
     }
 
@@ -372,16 +363,13 @@ public final class Dump {
       var options = choice.options();
       var defined = choice.defined();
       dialect.lock(
-          connection,
-          provider,
-          defined.stream().filter(i -> i.kind() == Item.Kind.TABLE).toList());
-      var sorted =
-          Order.sorted(provider.dialect().definitions().define(connection, provider, defined));
+          sql, defined.stream().filter(i -> i.kind() == Item.Kind.TABLE).toList());
+      var sorted = Order.sorted(provider.dialect().definitions().define(sql, defined, Mode.EXPORT));
       heading();
       statements(dialect.header(options));
       if (options.create()) {
         var containers = choice.items().stream().map(Item::container).distinct().toList();
-        statements(dialect.create(connection, provider, containers));
+        statements(dialect.create(sql, containers));
       }
       var created =
           sorted.stream().filter(d -> d.item().kind() != Item.Kind.TRIGGER).toList();
@@ -514,7 +502,7 @@ public final class Dump {
       for (var definition : sorted) {
         var item = definition.item();
         if (item.kind() == Item.Kind.TABLE) {
-          tables.add(new TableData(item, dialect.data(connection, provider, item, alone)));
+          tables.add(new TableData(item, dialect.data(sql, item, alone)));
         }
       }
       tables.sort(Comparator.comparing(

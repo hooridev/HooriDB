@@ -1,7 +1,6 @@
 package dev.hoori.db.core.dump;
 
 import dev.hoori.db.core.catalog.Container;
-import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.definition.Definition;
@@ -11,7 +10,6 @@ import dev.hoori.db.core.definition.Sql;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -56,7 +54,7 @@ public final class MySqlFamilyDump extends DumpDialect {
 
   // A snapshot of these servers locks no table, as the class says.
   @Override
-  void lock(Connection connection, Provider provider, List<Item> tables) {
+  void lock(Sql sql, List<Item> tables) {
     // Nothing to lock.
   }
 
@@ -70,14 +68,12 @@ public final class MySqlFamilyDump extends DumpDialect {
   // servers write with all its digits, where they write a float rounded to six. A table without
   // such a column has its rows as INSERTs of empty rows, which take its defaults.
   @Override
-  Optional<Data> data(Connection connection, Provider provider, Item table, boolean alone)
-      throws QueryException {
+  Optional<Data> data(Sql sql, Item table, boolean alone) throws QueryException {
+    var provider = sql.provider();
     if (alone) {
-      refuseTriggers(connection, provider, table);
+      refuseTriggers(sql, table);
     }
-    var columns = Sql.some(
-        connection,
-        provider,
+    var columns = sql.some(
         """
         SELECT COLUMN_NAME, DATA_TYPE, EXTRA FROM information_schema.COLUMNS
         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION""",
@@ -103,41 +99,28 @@ public final class MySqlFamilyDump extends DumpDialect {
             + Rows.qualified(provider, table.container(), table.name()),
         "INSERT INTO " + name + " (" + String.join(", ", names) + ") VALUES",
         false,
-        transactional(connection, provider, table),
+        transactional(sql, table),
         metadata -> values,
         Around.NOTHING));
   }
 
   // Whether the table's engine keeps transactions; one that the server does not tell of is taken
   // to.
-  private static boolean transactional(Connection connection, Provider provider, Item table)
-      throws QueryException {
-    var keeps = Sql.rows(
-        connection,
-        provider,
-        """
+  private static boolean transactional(Sql sql, Item table) throws QueryException {
+    var keeps = sql.rows("""
         SELECT e.TRANSACTIONS FROM information_schema.TABLES t
         JOIN information_schema.ENGINES e ON e.ENGINE = t.ENGINE
-        WHERE t.TABLE_SCHEMA = ? AND t.TABLE_NAME = ?""",
-        rows -> rows.getString(1),
-        table.container().name(),
-        table.name());
+        WHERE t.TABLE_SCHEMA = ? AND t.TABLE_NAME = ?""", rows -> rows.getString(1), table.container().name(), table.name());
     return keeps.isEmpty() || !"NO".equalsIgnoreCase(keeps.getFirst());
   }
 
   // The rows of an export of the data alone go into a table that has the triggers it has here,
   // which these servers cannot keep from firing for them.
-  private static void refuseTriggers(Connection connection, Provider provider, Item table)
-      throws QueryException {
-    var triggers = Sql.rows(
-        connection,
-        provider,
-        """
+  private static void refuseTriggers(Sql sql, Item table) throws QueryException {
+    var provider = sql.provider();
+    var triggers = sql.rows("""
         SELECT TRIGGER_NAME FROM information_schema.TRIGGERS
-        WHERE EVENT_OBJECT_SCHEMA = ? AND EVENT_OBJECT_TABLE = ? ORDER BY TRIGGER_NAME""",
-        rows -> rows.getString(1),
-        table.container().name(),
-        table.name());
+        WHERE EVENT_OBJECT_SCHEMA = ? AND EVENT_OBJECT_TABLE = ? ORDER BY TRIGGER_NAME""", rows -> rows.getString(1), table.container().name(), table.name());
     if (!triggers.isEmpty()) {
       throw QueryException.of(
           QueryException.Failure.OTHER,
@@ -258,17 +241,13 @@ public final class MySqlFamilyDump extends DumpDialect {
 
   // As the server shows the database, with its character set and collation.
   @Override
-  List<String> create(Connection connection, Provider provider, List<Container> containers)
-      throws QueryException {
+  List<String> create(Sql sql, List<Container> containers) throws QueryException {
+    var provider = sql.provider();
     var statements = new ArrayList<String>();
     for (var container : containers) {
       var name = provider.quote(container.name());
-      var shown = Sql.one(
-          connection,
-          provider,
-          container.name(),
-          "SHOW CREATE DATABASE " + name,
-          rows -> rows.getString(2));
+      var shown =
+          sql.one(container.name(), "SHOW CREATE DATABASE " + name, rows -> rows.getString(2));
       statements.add(shown.replaceFirst("^CREATE DATABASE ", "CREATE DATABASE IF NOT EXISTS "));
       statements.add("USE " + name);
     }

@@ -1,12 +1,11 @@
 package dev.hoori.db.core.dump;
 
 import dev.hoori.db.core.catalog.Container;
-import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.definition.Definition;
 import dev.hoori.db.core.definition.DefinitionDialect;
 import dev.hoori.db.core.definition.Item;
+import dev.hoori.db.core.definition.Sql;
 import dev.hoori.db.core.query.QueryException;
-import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
@@ -18,7 +17,7 @@ import java.util.Optional;
  * back; the objects and their definitions it reads as the provider's {@link DefinitionDialect}
  * does, in its snapshot. A provider's dialect hands one out; what it does is this package's own.
  */
-public abstract class DumpDialect {
+public abstract sealed class DumpDialect permits MySqlFamilyDump, PostgreSqlDump {
 
   DumpDialect() {}
 
@@ -39,8 +38,7 @@ public abstract class DumpDialect {
    * @throws QueryException {@link QueryException.Failure#NOT_FOUND} where a table no longer exists;
    *     another failure where another session holds one so that it cannot be kept
    */
-  abstract void lock(Connection connection, Provider provider, List<Item> tables)
-      throws QueryException;
+  abstract void lock(Sql sql, List<Item> tables) throws QueryException;
 
   /**
    * How the table's rows are read and written; empty where it keeps none of its own. Of an export
@@ -52,8 +50,7 @@ public abstract class DumpDialect {
    * @throws QueryException {@link QueryException.Failure#OTHER} where the data alone cannot go
    *     into the table as they are, as where the server cannot keep its triggers from firing
    */
-  abstract Optional<Data> data(Connection connection, Provider provider, Item table, boolean alone)
-      throws QueryException;
+  abstract Optional<Data> data(Sql sql, Item table, boolean alone) throws QueryException;
 
   /**
    * What lets the rows of an export of the data alone go into the tables, whose foreign keys refer
@@ -78,8 +75,7 @@ public abstract class DumpDialect {
   abstract List<String> afterDrops();
 
   /** What creates the schemas or the database, where they do not exist, and goes to it. */
-  abstract List<String> create(Connection connection, Provider provider, List<Container> containers)
-      throws QueryException;
+  abstract List<String> create(Sql sql, List<Container> containers) throws QueryException;
 
   /** The statement that begins a transaction around the rows. */
   abstract String beginTransaction();

@@ -3,17 +3,14 @@ package dev.hoori.db.core.definition;
 import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.Schema;
-import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.log.Journal;
-import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -55,22 +52,21 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
   }
 
   @Override
-  public void begin(Connection connection, Provider provider) throws QueryException {
+  public void begin(Sql sql) throws QueryException {
     try {
-      autoCommit(connection, provider, false);
-      Sql.execute(
-          connection, provider, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY");
+      autoCommit(sql, false);
+      sql.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY");
       // No SELECT, as the first fixes the snapshot, which an export's lock goes before.
-      Sql.execute(connection, provider, "SET LOCAL search_path = ''");
-      Sql.execute(connection, provider, "SET LOCAL row_security = off");
-      Sql.execute(connection, provider, "SET LOCAL IntervalStyle = 'postgres'");
-      Sql.execute(connection, provider, "SET LOCAL DateStyle = 'ISO, YMD'");
-      Sql.execute(connection, provider, "SET LOCAL extra_float_digits = 3");
+      sql.execute("SET LOCAL search_path = ''");
+      sql.execute("SET LOCAL row_security = off");
+      sql.execute("SET LOCAL IntervalStyle = 'postgres'");
+      sql.execute("SET LOCAL DateStyle = 'ISO, YMD'");
+      sql.execute("SET LOCAL extra_float_digits = 3");
     } catch (QueryException e) {
       // Where auto-commit went off, also as an interrupt cut its call short after it did.
       throw Sql.undone(e, () -> {
-        if (!autoCommits(connection)) {
-          end(connection, provider);
+        if (!autoCommits(sql.connection())) {
+          end(sql);
         }
       });
     }
@@ -86,49 +82,41 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
 
   // Rolled back, the transaction takes its settings with it.
   @Override
-  public void end(Connection connection, Provider provider) throws QueryException {
+  public void end(Sql sql) throws QueryException {
     try {
-      Sql.ending(connection, provider, Journal.ROLLBACK, () -> {
-        connection.rollback();
+      sql.ending(Journal.ROLLBACK, () -> {
+        sql.connection().rollback();
         return null;
       });
     } finally {
-      Sql.ending(connection, provider, Journal.autoCommit(true), () -> {
-        connection.setAutoCommit(true);
+      sql.ending(Journal.autoCommit(true), () -> {
+        sql.connection().setAutoCommit(true);
         return null;
       });
     }
   }
 
-  private static void autoCommit(Connection connection, Provider provider, boolean on)
-      throws QueryException {
-    Journal.call(
-        Sql.purpose(),
-        Journal.autoCommit(on),
-        () -> Query.run(connection, provider, () -> {
-          connection.setAutoCommit(on);
-          return null;
-        }));
+  private static void autoCommit(Sql sql, boolean on) throws QueryException {
+    sql.call(Journal.autoCommit(on), () -> {
+      sql.connection().setAutoCommit(on);
+      return null;
+    });
   }
 
   // An object as found in the catalog, with its oid.
   private record Found(Listed listed, long oid) {}
 
   @Override
-  public List<Listed> list(Connection connection, Provider provider, Container container)
-      throws QueryException {
-    return found(connection, provider, container).stream().map(Found::listed).toList();
+  public List<Listed> list(Sql sql, Container container) throws QueryException {
+    return found(sql, container).stream().map(Found::listed).toList();
   }
 
-  private static List<Found> found(Connection connection, Provider provider, Container container)
-      throws QueryException {
+  private static List<Found> found(Sql sql, Container container) throws QueryException {
     var schemas = new ArrayList<Schema>();
     switch (container) {
       case Schema schema -> schemas.add(schema);
       case Database database ->
-        schemas.addAll(Sql.rows(
-            connection,
-            provider,
+        schemas.addAll(sql.rows(
             """
             SELECT n.nspname FROM pg_catalog.pg_namespace n
             WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
@@ -138,15 +126,13 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
     }
     var found = new ArrayList<Found>();
     for (var schema : schemas) {
-      found.addAll(found(connection, provider, schema));
+      found.addAll(found(sql, schema));
     }
     return found;
   }
 
-  private static List<Found> found(Connection connection, Provider provider, Schema schema)
-      throws QueryException {
-    var relations = Sql.rows(
-        connection, provider, """
+  private static List<Found> found(Sql sql, Schema schema) throws QueryException {
+    var relations = sql.rows("""
         SELECT c.oid, c.relname, c.relkind, c.reltuples, pg_catalog.pg_table_size(c.oid)
         FROM pg_catalog.pg_class c
         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -154,9 +140,7 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
         AND NOT EXISTS (SELECT FROM pg_catalog.pg_depend d WHERE d.classid = %s
           AND d.objid = c.oid AND d.objsubid = 0 AND d.deptype IN ('e', 'i'))
         ORDER BY c.relname""".formatted(CLASS), rows -> relation(schema, rows), schema.name());
-    var routines = Sql.rows(
-        connection,
-        provider,
+    var routines = sql.rows(
         """
         SELECT p.oid, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid), p.prokind
         FROM pg_catalog.pg_proc p
@@ -174,9 +158,7 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
             rows.getLong(1)),
         schema.name());
     // A partition's triggers come from its table's, which make them.
-    var triggers = Sql.rows(
-        connection,
-        provider,
+    var triggers = sql.rows(
         """
         SELECT t.oid, t.tgname, c.relname FROM pg_catalog.pg_trigger t
         JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
@@ -233,23 +215,71 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
     final Map<Item, Found> items = new LinkedHashMap<>();
     final Map<Long, Item> relations = new HashMap<>();
     final Map<Long, Item> routines = new HashMap<>();
+
+    void add(Found found) {
+      var item = found.listed().item();
+      items.put(item, found);
+      switch (item.kind()) {
+        case TABLE, VIEW, SEQUENCE -> relations.put(found.oid(), item);
+        case FUNCTION, PROCEDURE -> routines.put(found.oid(), item);
+        case TRIGGER -> {
+          // Nothing needs a trigger.
+        }
+      }
+    }
+  }
+
+  // The object asked for alone, by its names, where it is there as one of its kind.
+  private static Optional<Found> found(Sql sql, Item item) throws QueryException {
+    var schema = item.container().name();
+    var found = switch (item.kind()) {
+      case TABLE, VIEW, SEQUENCE ->
+        sql.rows(
+            """
+            SELECT c.oid FROM pg_catalog.pg_class c
+            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = ? AND c.relname = ? AND c.relkind IN (%s)""".formatted(
+                    switch (item.kind()) {
+                      case TABLE -> "'r', 'p'";
+                      case VIEW -> "'v', 'm'";
+                      default -> "'S'";
+                    }),
+            rows -> rows.getLong(1),
+            schema,
+            item.name());
+      case FUNCTION, PROCEDURE ->
+        sql.rows(
+            """
+            SELECT p.oid FROM pg_catalog.pg_proc p
+            JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = ? AND p.proname = ?
+            AND pg_catalog.pg_get_function_identity_arguments(p.oid) = ? AND p.prokind = ?""",
+            rows -> rows.getLong(1),
+            schema,
+            item.name(),
+            item.arguments(),
+            item.kind() == Item.Kind.PROCEDURE ? "p" : "f");
+      case TRIGGER -> sql.rows("""
+            SELECT t.oid FROM pg_catalog.pg_trigger t
+            JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = ? AND c.relname = ? AND t.tgname = ? AND NOT t.tgisinternal""", rows -> rows.getLong(1), schema, item.table(), item.name());
+    };
+    return found.stream().findFirst().map(oid -> new Found(Listed.of(item), oid));
   }
 
   @Override
-  public List<Definition> define(Connection connection, Provider provider, List<Item> items)
-      throws QueryException {
+  public List<Definition> define(Sql sql, List<Item> items, Mode mode) throws QueryException {
     var known = new Known();
-    for (var schema : items.stream().map(Item::container).distinct().toList()) {
-      for (var found : found(connection, provider, schema)) {
-        var item = found.listed().item();
-        known.items.put(item, found);
-        switch (item.kind()) {
-          case TABLE, VIEW, SEQUENCE -> known.relations.put(found.oid(), item);
-          case FUNCTION, PROCEDURE -> known.routines.put(found.oid(), item);
-          case TRIGGER -> {
-            // Nothing needs a trigger.
-          }
+    if (mode == Mode.EXPORT) {
+      for (var schema : items.stream().map(Item::container).distinct().toList()) {
+        for (var found : found(sql, schema)) {
+          known.add(found);
         }
+      }
+    } else {
+      for (var item : items) {
+        found(sql, item).ifPresent(known::add);
       }
     }
     var chosen = Set.copyOf(items);
@@ -260,7 +290,7 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
         throw QueryException.of(
             QueryException.Failure.NOT_FOUND, item.shown() + " no longer exists");
       }
-      var object = new Defining(connection, provider, known, chosen, found);
+      var object = new Defining(sql, mode, known, chosen, found);
       definitions.add(
           switch (item.kind()) {
             case TABLE -> object.table();
@@ -280,17 +310,19 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
         pg_catalog.format_type(s.seqtypid, NULL), s.seqstart, s.seqincrement, s.seqmin, s.seqmax,
         s.seqcache, s.seqcycle""";
 
-    private final Connection connection;
+    private final Sql sql;
     private final Provider provider;
+    private final Mode mode;
     private final Known known;
     private final Set<Item> chosen;
     private final Item item;
     private final String oid;
     private final String name;
 
-    Defining(Connection connection, Provider provider, Known known, Set<Item> chosen, Found found) {
-      this.connection = connection;
-      this.provider = provider;
+    Defining(Sql sql, Mode mode, Known known, Set<Item> chosen, Found found) {
+      this.sql = sql;
+      this.provider = sql.provider();
+      this.mode = mode;
       this.known = known;
       this.chosen = chosen;
       this.item = found.listed().item();
@@ -306,12 +338,12 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
       return provider.quote(name);
     }
 
-    private <T> T one(String sql, Sql.Row<T> row) throws QueryException {
-      return Sql.one(connection, provider, item.shown(), sql, row);
+    private <T> T one(String query, Sql.Row<T> row) throws QueryException {
+      return sql.one(item.shown(), query, row);
     }
 
-    private <T> List<T> rows(String sql, Sql.Row<T> row) throws QueryException {
-      return Sql.rows(connection, provider, sql, row);
+    private <T> List<T> rows(String query, Sql.Row<T> row) throws QueryException {
+      return sql.rows(query, row);
     }
 
     private record Relation(
@@ -609,7 +641,7 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
 
     // The sequences that its columns own, where they go too.
     private List<String> owned() throws QueryException {
-      return Sql.some(connection, provider, """
+      return sql.some("""
           SELECT d.objid, a.attname FROM pg_catalog.pg_depend d
           JOIN pg_catalog.pg_class s ON s.oid = d.objid AND s.relkind = 'S'
           JOIN pg_catalog.pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid
@@ -732,28 +764,46 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
     }
 
     private record View(
-        String kind, String options, String definition, String comment, boolean populated) {}
+        String kind,
+        String options,
+        String definition,
+        String comment,
+        boolean populated,
+        String tablespace) {}
+
+    private record ViewColumn(String name, String comment, String fallback) {}
 
     // A materialized view without its rows, which its refresh gives after the tables' rows where
-    // it has any; one never refreshed stays so.
+    // it has any; one never refreshed stays so. Its columns' comments and a view's columns'
+    // defaults follow it; for a change on this server, a materialized view keeps its access
+    // method and tablespace, which an export leaves to the server that reads it.
     Definition view() throws QueryException {
       var view = one(
           """
           SELECT c.relkind, pg_catalog.array_to_string(c.reloptions, ', '),
             pg_catalog.pg_get_viewdef(c.oid), pg_catalog.obj_description(c.oid, 'pg_class'),
-            c.relispopulated
+            c.relispopulated,
+            (SELECT t.spcname FROM pg_catalog.pg_tablespace t WHERE t.oid = c.reltablespace)
           FROM pg_catalog.pg_class c WHERE c.oid = %s""".formatted(oid),
           rows -> new View(
               rows.getString(1),
               rows.getString(2),
               rows.getString(3),
               rows.getString(4),
-              rows.getBoolean(5)));
+              rows.getBoolean(5),
+              rows.getString(6)));
       var materialized = view.kind().equals("m");
+      var edit = mode == Mode.EDIT;
       var create = new StringBuilder(materialized ? "CREATE MATERIALIZED VIEW " : "CREATE VIEW ")
           .append(name);
+      if (materialized && edit) {
+        method().ifPresent(method -> create.append(" USING ").append(quote(method)));
+      }
       if (view.options() != null && !view.options().isEmpty()) {
         create.append(" WITH (").append(view.options()).append(')');
+      }
+      if (materialized && edit && view.tablespace() != null) {
+        create.append(" TABLESPACE ").append(quote(view.tablespace()));
       }
       create.append(" AS\n").append(withoutTerminator(view.definition()));
       if (materialized) {
@@ -764,6 +814,16 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
       var kind = materialized ? "MATERIALIZED VIEW " : "VIEW ";
       if (view.comment() != null) {
         statements.add("COMMENT ON " + kind + name + " IS " + literal(view.comment()));
+      }
+      for (var column : viewColumns()) {
+        var named = name + "." + quote(column.name());
+        if (column.comment() != null) {
+          statements.add("COMMENT ON COLUMN " + named + " IS " + literal(column.comment()));
+        }
+        if (column.fallback() != null) {
+          statements.add("ALTER VIEW " + name + " ALTER COLUMN " + quote(column.name())
+              + " SET DEFAULT " + column.fallback());
+        }
       }
       return new Definition(
           item,
@@ -779,6 +839,35 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
           List.of(),
           needs(CLASS),
           Set.of());
+    }
+
+    // The view's columns that have a comment or a default.
+    private List<ViewColumn> viewColumns() throws QueryException {
+      return rows(
+          """
+          SELECT a.attname, pg_catalog.col_description(a.attrelid, a.attnum),
+            pg_catalog.pg_get_expr(d.adbin, d.adrelid)
+          FROM pg_catalog.pg_attribute a
+          LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+          WHERE a.attrelid = %s AND a.attnum > 0 AND NOT a.attisdropped
+          AND (d.adbin IS NOT NULL
+            OR pg_catalog.col_description(a.attrelid, a.attnum) IS NOT NULL)
+          ORDER BY a.attnum""".formatted(oid),
+          rows -> new ViewColumn(rows.getString(1), rows.getString(2), rows.getString(3)));
+    }
+
+    // The table access method of the materialized view, which servers before 12 do not have.
+    private Optional<String> method() throws QueryException {
+      try {
+        if (sql.connection().getMetaData().getDatabaseMajorVersion() < 12) {
+          return Optional.empty();
+        }
+      } catch (SQLException _) {
+        return Optional.empty();
+      }
+      return Optional.ofNullable(one("""
+          SELECT a.amname FROM pg_catalog.pg_class c
+          LEFT JOIN pg_catalog.pg_am a ON a.oid = c.relam WHERE c.oid = %s""".formatted(oid), rows -> rows.getString(1)));
     }
 
     private record Sequence(String options, String comment) {}
@@ -893,6 +982,9 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
     // its columns' defaults and its constraints but foreign keys: relations, routines, and a
     // relation by its row type.
     private Set<Item> needs(String own) throws QueryException {
+      if (mode == Mode.EDIT) {
+        return Set.of();
+      }
       var refs = rows("""
           SELECT DISTINCT d.refclassid = %2$s,
             CASE WHEN d.refclassid = %3$s THEN t.typrelid ELSE d.refobjid END
@@ -932,137 +1024,5 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
       var trimmed = sql.strip();
       return trimmed.endsWith(";") ? trimmed.substring(0, trimmed.length() - 1) : trimmed;
     }
-  }
-
-  // The view by its names, with its row type, which a routine's result may use.
-  private static final String VIEW = """
-      WITH v AS (SELECT c.oid, c.reltype FROM pg_catalog.pg_class c
-        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = ? AND c.relname = ? AND c.relkind IN ('v', 'm'))
-      """;
-
-  // A relation or routine that a row of pg_depend names, in a schema that is not the server's
-  // own: a relation's kind, or a routine's kind and arguments.
-  private static final String RELATIONS = """
-      SELECT DISTINCT n.nspname, c.relname, c.relkind, ''
-      FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-      WHERE c.oid IN (%s) AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'""";
-
-  private static final String ROUTINES = """
-      SELECT DISTINCT n.nspname, p.proname,
-        CASE p.prokind WHEN 'p' THEN 'procedure' ELSE 'function' END,
-        pg_catalog.pg_get_function_identity_arguments(p.oid)
-      FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-      WHERE p.oid IN (%s) AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'""";
-
-  // What the view's rules read; what reads the view in its rules, or in a routine's body or
-  // result, which keep it from being dropped alone.
-  @Override
-  public References references(Connection connection, Provider provider, Table view)
-      throws QueryException {
-    var schema = view.container().name();
-    var rules = """
-        SELECT d.refobjid FROM pg_catalog.pg_depend d
-        JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid
-        WHERE d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass
-        AND r.ev_class = (SELECT oid FROM v) AND d.refobjid <> (SELECT oid FROM v)
-        AND d.refclassid = %s""";
-    var readers = """
-        SELECT r.ev_class FROM pg_catalog.pg_depend d
-        JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid
-        WHERE d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass
-        AND d.refclassid = %1$s AND d.refobjid = (SELECT oid FROM v)
-        AND r.ev_class <> (SELECT oid FROM v)""".formatted(CLASS);
-    var routines = """
-        SELECT d.objid FROM pg_catalog.pg_depend d
-        WHERE d.classid = %1$s AND d.deptype = 'n'
-        AND ((d.refclassid = %2$s AND d.refobjid = (SELECT oid FROM v))
-          OR (d.refclassid = %3$s AND d.refobjid = (SELECT reltype FROM v)))""".formatted(PROC, CLASS, TYPE);
-    var uses = new ArrayList<Reference>();
-    uses.addAll(
-        referred(connection, provider, view, VIEW + RELATIONS.formatted(rules.formatted(CLASS))));
-    uses.addAll(
-        referred(connection, provider, view, VIEW + ROUTINES.formatted(rules.formatted(PROC))));
-    var usedBy = new ArrayList<Reference>();
-    usedBy.addAll(referred(connection, provider, view, VIEW + RELATIONS.formatted(readers)));
-    usedBy.addAll(referred(connection, provider, view, VIEW + ROUTINES.formatted(routines)));
-    return new References(sorted(uses), sorted(usedBy));
-  }
-
-  private static List<Reference> referred(
-      Connection connection, Provider provider, Table view, String sql) throws QueryException {
-    var database = view.container().database();
-    return Sql.some(
-        connection,
-        provider,
-        sql,
-        rows -> {
-          var schema = new Schema(database, rows.getString(1), false);
-          var name = rows.getString(2);
-          var arguments = rows.getString(4);
-          return kind(rows.getString(3)).map(kind -> new Reference(schema, kind, name, arguments));
-        },
-        view.container().name(),
-        view.name());
-  }
-
-  // A relation's kind, or a routine's as ROUTINES names it; nothing of a sequence or a type.
-  private static Optional<Reference.Kind> kind(String kind) {
-    return switch (kind) {
-      case "r", "p" -> Optional.of(Reference.Kind.TABLE);
-      case "f" -> Optional.of(Reference.Kind.FOREIGN_TABLE);
-      case "v" -> Optional.of(Reference.Kind.VIEW);
-      case "m" -> Optional.of(Reference.Kind.MATERIALIZED_VIEW);
-      case "function" -> Optional.of(Reference.Kind.FUNCTION);
-      case "procedure" -> Optional.of(Reference.Kind.PROCEDURE);
-      default -> Optional.empty();
-    };
-  }
-
-  private static List<Reference> sorted(List<Reference> references) {
-    return references.stream()
-        .sorted(Comparator.comparing((Reference r) -> r.container().name())
-            .thenComparing(Reference::name)
-            .thenComparing(Reference::arguments))
-        .toList();
-  }
-
-  // A unique index that CONCURRENTLY takes: of columns alone, over all rows, and valid.
-  @Override
-  public boolean refreshesConcurrently(Connection connection, Provider provider, Table view)
-      throws QueryException {
-    if (view.kind() != Table.Kind.MATERIALIZED) {
-      return false;
-    }
-    return Sql.one(
-        connection,
-        provider,
-        view.name(),
-        """
-        SELECT c.relispopulated AND EXISTS (SELECT FROM pg_catalog.pg_index i
-          WHERE i.indrelid = c.oid AND i.indisunique AND i.indisvalid
-          AND i.indpred IS NULL AND i.indexprs IS NULL)
-        FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = ? AND c.relname = ? AND c.relkind = 'm'""",
-        rows -> rows.getBoolean(1),
-        view.container().name(),
-        view.name());
-  }
-
-  @Override
-  public boolean changesInTransaction() {
-    return true;
-  }
-
-  @Override
-  public boolean dropsDependents() {
-    return true;
-  }
-
-  // invalid_table_definition, which CREATE OR REPLACE VIEW fails with where a column would be
-  // dropped, renamed or moved, or change its type.
-  @Override
-  public boolean keepsColumns(QueryException refusal) {
-    return refusal.getCause() instanceof SQLException e && "42P16".equals(e.getSQLState());
   }
 }

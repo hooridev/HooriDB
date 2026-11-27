@@ -14,6 +14,8 @@ import dev.hoori.db.core.data.MariaDbRows;
 import dev.hoori.db.core.data.RowsDialect;
 import dev.hoori.db.core.definition.DefinitionDialect;
 import dev.hoori.db.core.definition.MySqlFamilyDefinitions;
+import dev.hoori.db.core.definition.MySqlFamilyViews;
+import dev.hoori.db.core.definition.ViewDialect;
 import dev.hoori.db.core.driver.Driver;
 import dev.hoori.db.core.dump.DumpDialect;
 import dev.hoori.db.core.dump.MySqlFamilyDump;
@@ -82,6 +84,7 @@ public final class MariaDb extends MySqlFamily {
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new MariaDbRows();
   private final DefinitionDialect definitions = new MySqlFamilyDefinitions(true);
+  private final ViewDialect views = new MySqlFamilyViews();
   private final DumpDialect dump = new MySqlFamilyDump();
   private final MonitorDialect monitor = new MySqlFamily.Monitor(
       "TIME_MS / 1000",
@@ -157,6 +160,11 @@ public final class MariaDb extends MySqlFamily {
   @Override
   public DefinitionDialect definitions() {
     return definitions;
+  }
+
+  @Override
+  public ViewDialect views() {
+    return views;
   }
 
   @Override

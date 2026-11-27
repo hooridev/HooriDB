@@ -2,11 +2,9 @@ package dev.hoori.db.core.definition;
 
 import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
-import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.query.QueryException;
 import dev.hoori.db.core.sql.Statements;
-import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -59,45 +57,36 @@ public final class MySqlFamilyDefinitions extends DefinitionDialect {
 
   // Only REPEATABLE READ reads in one snapshot; SET TRANSACTION sets it for this transaction alone.
   @Override
-  public void begin(Connection connection, Provider provider) throws QueryException {
+  public void begin(Sql sql) throws QueryException {
     try {
-      Sql.execute(
-          connection,
-          provider,
+      sql.execute(
           "SET @hooridb_time_zone = @@SESSION.time_zone, @hooridb_sql_mode = @@SESSION.sql_mode,"
               + " SESSION time_zone = '+00:00', SESSION sql_mode = '" + MODE + "'");
     } catch (QueryException e) {
-      throw Sql.undone(e, () -> Sql.ending(connection, provider, SESSION_BACK));
+      throw Sql.undone(e, () -> sql.ending(SESSION_BACK));
     }
     try {
-      Sql.execute(connection, provider, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
-      Sql.execute(connection, provider, "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY");
+      sql.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+      sql.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY");
     } catch (QueryException e) {
-      throw Sql.undone(e, () -> end(connection, provider));
+      throw Sql.undone(e, () -> end(sql));
     }
   }
 
   @Override
-  public void end(Connection connection, Provider provider) throws QueryException {
+  public void end(Sql sql) throws QueryException {
     try {
-      Sql.ending(connection, provider, "ROLLBACK");
+      sql.ending("ROLLBACK");
     } finally {
-      Sql.ending(connection, provider, SESSION_BACK);
+      sql.ending(SESSION_BACK);
     }
   }
 
-  private static String literal(Provider provider, String text) {
-    return provider.dialect().rows().literal(text);
-  }
-
   @Override
-  public List<Listed> list(Connection connection, Provider provider, Container container)
-      throws QueryException {
+  public List<Listed> list(Sql sql, Container container) throws QueryException {
     var database = container.database();
     var listed = new ArrayList<Listed>();
-    var tables = Sql.some(
-        connection,
-        provider,
+    var tables = sql.some(
         """
         SELECT t.TABLE_NAME, t.TABLE_TYPE, t.TABLE_ROWS, t.DATA_LENGTH, e.TRANSACTIONS
         FROM information_schema.TABLES t
@@ -113,9 +102,7 @@ public final class MySqlFamilyDefinitions extends DefinitionDialect {
     for (var kind : List.of(Item.Kind.TABLE, Item.Kind.VIEW, Item.Kind.SEQUENCE)) {
       tables.stream().filter(l -> l.item().kind() == kind).forEach(listed::add);
     }
-    var routines = Sql.rows(
-        connection,
-        provider,
+    var routines = sql.rows(
         """
         SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES
         WHERE ROUTINE_SCHEMA = ? ORDER BY ROUTINE_NAME""",
@@ -130,9 +117,7 @@ public final class MySqlFamilyDefinitions extends DefinitionDialect {
       routines.stream().filter(l -> l.item().kind() == kind).forEach(listed::add);
     }
     // In the order they run in, which creating them in it keeps.
-    listed.addAll(Sql.rows(
-        connection,
-        provider,
+    listed.addAll(sql.rows(
         """
         SELECT TRIGGER_NAME, EVENT_OBJECT_TABLE FROM information_schema.TRIGGERS
         WHERE TRIGGER_SCHEMA = ?
@@ -170,26 +155,31 @@ public final class MySqlFamilyDefinitions extends DefinitionDialect {
   }
 
   @Override
-  public List<Definition> define(Connection connection, Provider provider, List<Item> items)
-      throws QueryException {
+  public List<Definition> define(Sql sql, List<Item> items, Mode mode) throws QueryException {
     var known = new HashSet<Item>();
     var references = new HashMap<String, Set<String>>(); // a table's, by its name
-    for (var database :
-        items.stream().map(i -> i.container().database()).distinct().toList()) {
-      for (var listed : list(connection, provider, database)) {
-        known.add(listed.item());
+    if (mode == Mode.EXPORT) {
+      for (var database :
+          items.stream().map(i -> i.container().database()).distinct().toList()) {
+        for (var listed : list(sql, database)) {
+          known.add(listed.item());
+        }
+        for (var reference : sql.rows(
+            """
+            SELECT TABLE_NAME, REFERENCED_TABLE_NAME
+            FROM information_schema.REFERENTIAL_CONSTRAINTS
+            WHERE CONSTRAINT_SCHEMA = ? AND UNIQUE_CONSTRAINT_SCHEMA = ?""",
+            rows -> List.of(rows.getString(1), rows.getString(2)),
+            database.name(),
+            database.name())) {
+          references.computeIfAbsent(reference.get(0), k -> new HashSet<>()).add(reference.get(1));
+        }
       }
-      for (var reference : Sql.rows(
-          connection,
-          provider,
-          """
-          SELECT TABLE_NAME, REFERENCED_TABLE_NAME
-          FROM information_schema.REFERENTIAL_CONSTRAINTS
-          WHERE CONSTRAINT_SCHEMA = ? AND UNIQUE_CONSTRAINT_SCHEMA = ?""",
-          rows -> List.of(rows.getString(1), rows.getString(2)),
-          database.name(),
-          database.name())) {
-        references.computeIfAbsent(reference.get(0), k -> new HashSet<>()).add(reference.get(1));
+    } else {
+      for (var item : items) {
+        if (exists(sql, item)) {
+          known.add(item);
+        }
       }
     }
     var definitions = new ArrayList<Definition>();
@@ -198,26 +188,43 @@ public final class MySqlFamilyDefinitions extends DefinitionDialect {
         throw QueryException.of(
             QueryException.Failure.NOT_FOUND, item.shown() + " no longer exists");
       }
-      definitions.add(define(connection, provider, item, known, references));
+      definitions.add(define(sql, item, mode, known, references));
     }
     return definitions;
   }
 
+  // Whether the object is there, as one of its kind; asked of it alone.
+  private boolean exists(Sql sql, Item item) throws QueryException {
+    var database = item.container().database().name();
+    return switch (item.kind()) {
+      case TABLE, VIEW, SEQUENCE ->
+        sql.rows("""
+                SELECT TABLE_TYPE FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?""", rows -> kind(rows.getString(1)), database, item.name())
+            .contains(Optional.of(item.kind()));
+      case FUNCTION, PROCEDURE ->
+        !sql.rows("""
+                SELECT 1 FROM information_schema.ROUTINES
+                WHERE ROUTINE_SCHEMA = ? AND ROUTINE_NAME = ? AND ROUTINE_TYPE = ?""", rows -> true, database, item.name(), item.kind().name()).isEmpty();
+      case TRIGGER -> !sql.rows("""
+                SELECT 1 FROM information_schema.TRIGGERS
+                WHERE TRIGGER_SCHEMA = ? AND TRIGGER_NAME = ?""", rows -> true, database, item.name()).isEmpty();
+    };
+  }
+
   private Definition define(
-      Connection connection,
-      Provider provider,
-      Item item,
-      Set<Item> known,
-      Map<String, Set<String>> references)
+      Sql sql, Item item, Mode mode, Set<Item> known, Map<String, Set<String>> references)
       throws QueryException {
+    var provider = sql.provider();
     var name = provider.quote(item.name());
     var qualified = provider.quote(item.container().name()) + "." + name;
+    var export = mode == Mode.EXPORT;
     return switch (item.kind()) {
       case TABLE -> {
-        var created = withoutDatabase(
-            provider,
-            shown(connection, provider, item, "SHOW CREATE TABLE " + qualified),
-            provider.quote(item.container().name()));
+        var shown = shown(sql, item, "SHOW CREATE TABLE " + qualified);
+        var created = export
+            ? withoutDatabase(provider, shown, provider.quote(item.container().name()))
+            : shown;
         var table = Created.of(provider, created, name);
         var refers = new HashSet<Item>();
         for (var to : references.getOrDefault(item.name(), Set.of())) {
@@ -240,8 +247,8 @@ public final class MySqlFamilyDefinitions extends DefinitionDialect {
             refers);
       }
       case VIEW -> {
-        var created =
-            withoutDefiner(shown(connection, provider, item, "SHOW CREATE VIEW " + qualified));
+        var shown = shown(sql, item, "SHOW CREATE VIEW " + qualified);
+        var created = export ? withoutDefiner(shown) : shown;
         yield new Definition(
             item,
             List.of(created),
@@ -252,14 +259,12 @@ public final class MySqlFamilyDefinitions extends DefinitionDialect {
             "DROP VIEW IF EXISTS " + name,
             List.of(),
             List.of(),
-            viewNeeds(provider, created, item, known),
+            export ? viewNeeds(provider, created, item, known) : Set.of(),
             Set.of());
       }
       case SEQUENCE -> {
-        var created = shown(connection, provider, item, "SHOW CREATE SEQUENCE " + qualified);
-        var next = Sql.one(
-            connection,
-            provider,
+        var created = shown(sql, item, "SHOW CREATE SEQUENCE " + qualified);
+        var next = sql.one(
             item.shown(),
             "SELECT next_not_cached_value FROM " + qualified,
             rows -> rows.getString(1));
@@ -276,25 +281,24 @@ public final class MySqlFamilyDefinitions extends DefinitionDialect {
             Set.of(),
             Set.of());
       }
-      case FUNCTION, PROCEDURE, TRIGGER -> routine(connection, provider, item, known);
+      case FUNCTION, PROCEDURE, TRIGGER -> routine(sql, item, mode, known);
     };
   }
 
-  // A routine or trigger as it was created, in the SQL mode of its own, which reads its body.
-  private static Definition routine(
-      Connection connection, Provider provider, Item item, Set<Item> known) throws QueryException {
+  // A routine or trigger as it was created; for an export in the SQL mode of its own, which
+  // reads its body.
+  private static Definition routine(Sql sql, Item item, Mode mode, Set<Item> known)
+      throws QueryException {
     var what = switch (item.kind()) {
       case FUNCTION -> "FUNCTION ";
       case PROCEDURE -> "PROCEDURE ";
       default -> "TRIGGER ";
     };
-    var name = provider.quote(item.name());
+    var name = sql.quote(item.name());
     record Shown(String mode, String created) {}
-    var shown = Sql.one(
-        connection,
-        provider,
+    var shown = sql.one(
         item.shown(),
-        "SHOW CREATE " + what + provider.quote(item.container().name()) + "." + name,
+        "SHOW CREATE " + what + sql.quote(item.container().name()) + "." + name,
         rows -> new Shown(rows.getString(2), rows.getString(3)));
     if (shown.created() == null) {
       throw QueryException.of(QueryException.Failure.ACCESS_DENIED, NO_DEFINITION + item.shown());
@@ -302,16 +306,19 @@ public final class MySqlFamilyDefinitions extends DefinitionDialect {
     var needs = new HashSet<Item>();
     if (item.kind() == Item.Kind.TRIGGER) {
       var table = Item.of(item.container(), Item.Kind.TABLE, item.table());
-      if (known.contains(table)) {
+      if (known.contains(table) && mode == Mode.EXPORT) {
         needs.add(table);
       }
     }
+    var create = mode == Mode.EXPORT
+        ? List.of(
+            "SET SESSION sql_mode = " + sql.literal(shown.mode()),
+            withoutDefiner(shown.created()),
+            "SET SESSION sql_mode = '" + MODE + "'")
+        : List.of(shown.created());
     return new Definition(
         item,
-        List.of(
-            "SET SESSION sql_mode = " + literal(provider, shown.mode()),
-            withoutDefiner(shown.created()),
-            "SET SESSION sql_mode = '" + MODE + "'"),
+        create,
         true,
         List.of(),
         List.of(),
@@ -324,9 +331,8 @@ public final class MySqlFamilyDefinitions extends DefinitionDialect {
   }
 
   // The definition in the second column of what SHOW CREATE shows.
-  private static String shown(Connection connection, Provider provider, Item item, String sql)
-      throws QueryException {
-    var shown = Sql.one(connection, provider, item.shown(), sql, rows -> {
+  private static String shown(Sql sql, Item item, String query) throws QueryException {
+    var shown = sql.one(item.shown(), query, rows -> {
       var text = rows.getString(2);
       return text == null ? "" : text;
     });
@@ -586,109 +592,5 @@ public final class MySqlFamilyDefinitions extends DefinitionDialect {
       var column = named > 0 && rest.startsWith(" (", named) ? quotedEnd(rest, named + 2) : -1;
       return Optional.of(column > 0 ? rest.substring(named + 2, column) : "");
     }
-  }
-
-  // An object's name as a definition of information_schema.VIEWS quotes it, with its database:
-  // `db`.`name`, a backtick in either doubled.
-  private static String quotedIn(String database, String name) {
-    return "CONCAT('`', REPLACE(%s, '`', '``'), '`.`', REPLACE(%s, '`', '``'), '`')"
-        .formatted(database, name);
-  }
-
-  // The databases that are the server's own, whose objects no view of the user's is about.
-  private static final String NOT_SYSTEM =
-      "NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema')";
-
-  // These servers keep no dependencies of a view: what it uses is what its definition, as
-  // information_schema.VIEWS gives it with every name qualified, quotes, a routine's name before a
-  // parenthesis; what uses it is each view whose definition quotes its name. Compared as bytes,
-  // as the names are, whatever the collation of information_schema.
-  @Override
-  public References references(Connection connection, Provider provider, Table view)
-      throws QueryException {
-    var on = view.container().database().name();
-    var uses = new ArrayList<Reference>();
-    uses.addAll(Sql.some(
-        connection,
-        provider,
-        """
-        SELECT t.TABLE_SCHEMA, t.TABLE_NAME, t.TABLE_TYPE FROM information_schema.VIEWS v
-        JOIN information_schema.TABLES t ON LOCATE(CAST(%s AS BINARY),
-          CAST(v.VIEW_DEFINITION AS BINARY)) > 0
-        WHERE v.TABLE_SCHEMA = ? AND v.TABLE_NAME = ? AND t.TABLE_SCHEMA %s
-        AND NOT (t.TABLE_SCHEMA = v.TABLE_SCHEMA AND t.TABLE_NAME = v.TABLE_NAME)
-        ORDER BY t.TABLE_SCHEMA, t.TABLE_NAME""".formatted(quotedIn("t.TABLE_SCHEMA", "t.TABLE_NAME"), NOT_SYSTEM),
-        rows -> {
-          var database = new Database(rows.getString(1), false);
-          var name = rows.getString(2);
-          return relation(rows.getString(3)).map(kind -> new Reference(database, kind, name, ""));
-        },
-        on,
-        view.name()));
-    uses.addAll(Sql.rows(
-        connection,
-        provider,
-        """
-        SELECT r.ROUTINE_SCHEMA, r.ROUTINE_NAME, r.ROUTINE_TYPE FROM information_schema.VIEWS v
-        JOIN information_schema.ROUTINES r ON LOCATE(CAST(CONCAT(%s, '(') AS BINARY),
-          CAST(v.VIEW_DEFINITION AS BINARY)) > 0
-        WHERE v.TABLE_SCHEMA = ? AND v.TABLE_NAME = ? AND r.ROUTINE_SCHEMA %s
-        ORDER BY r.ROUTINE_SCHEMA, r.ROUTINE_NAME""".formatted(quotedIn("r.ROUTINE_SCHEMA", "r.ROUTINE_NAME"), NOT_SYSTEM),
-        rows -> new Reference(
-            new Database(rows.getString(1), false),
-            rows.getString(3).equalsIgnoreCase("PROCEDURE")
-                ? Reference.Kind.PROCEDURE
-                : Reference.Kind.FUNCTION,
-            rows.getString(2),
-            ""),
-        on,
-        view.name()));
-    var usedBy = Sql.rows(
-        connection,
-        provider,
-        """
-        SELECT v.TABLE_SCHEMA, v.TABLE_NAME FROM information_schema.VIEWS v
-        WHERE LOCATE(CAST(%s AS BINARY), CAST(v.VIEW_DEFINITION AS BINARY)) > 0
-        AND NOT (v.TABLE_SCHEMA = ? AND v.TABLE_NAME = ?)
-        ORDER BY v.TABLE_SCHEMA, v.TABLE_NAME""".formatted(quotedIn("?", "?")),
-        rows -> new Reference(
-            new Database(rows.getString(1), false), Reference.Kind.VIEW, rows.getString(2), ""),
-        on,
-        view.name(),
-        on,
-        view.name());
-    return new References(uses, usedBy);
-  }
-
-  private static Optional<Reference.Kind> relation(String type) {
-    return switch (type) {
-      case "BASE TABLE", "SYSTEM VERSIONED" -> Optional.of(Reference.Kind.TABLE);
-      case "VIEW" -> Optional.of(Reference.Kind.VIEW);
-      default -> Optional.empty();
-    };
-  }
-
-  // These servers have no materialized views.
-  @Override
-  public boolean refreshesConcurrently(Connection connection, Provider provider, Table view) {
-    return false;
-  }
-
-  // Each statement of DDL commits what went before it, and itself.
-  @Override
-  public boolean changesInTransaction() {
-    return false;
-  }
-
-  // RESTRICT and CASCADE are taken and do nothing: a view that used the one dropped stays, invalid.
-  @Override
-  public boolean dropsDependents() {
-    return false;
-  }
-
-  // A view's columns are whatever its new SELECT gives.
-  @Override
-  public boolean keepsColumns(QueryException refusal) {
-    return false;
   }
 }

@@ -33,10 +33,20 @@ public interface Views {
 
   /**
    * The server refused to replace the view in place, as its columns would change, which it does
-   * not let them, {@link DefinitionDialect#keepsColumns}; nothing was changed. Only a {@link
+   * not let them, {@link ViewDialect#keepsColumns}; nothing was changed. Only a {@link
    * ViewChange.Kind#REPLACE} comes to this, which {@link ViewChange#recreate} can then make.
    *
    * @param words what the server said
    */
   record KeepsColumns(String words) implements Changed {}
+
+  /**
+   * The server refused to drop the view, as something depends on it, which a drop with what
+   * depends on it, {@link ViewChange#drop} with dependents, would take; nothing was changed. Only a
+   * {@link ViewChange.Kind#DROP} without dependents comes to this, where {@link
+   * ViewDialect#dependedOn} says so.
+   *
+   * @param words what the server said, which names what depends on it
+   */
+  record DependedOn(String words) implements Changed {}
 }

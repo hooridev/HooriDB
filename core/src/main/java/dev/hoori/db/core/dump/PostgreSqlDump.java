@@ -1,14 +1,12 @@
 package dev.hoori.db.core.dump;
 
 import dev.hoori.db.core.catalog.Container;
-import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.definition.Definition;
 import dev.hoori.db.core.definition.Item;
 import dev.hoori.db.core.definition.Sql;
 import dev.hoori.db.core.query.QueryException;
 import java.math.BigDecimal;
-import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -74,19 +72,18 @@ public final class PostgreSqlDump extends DumpDialect {
   // everything that waits behind it. Taken before the snapshot, which the first SELECT fixes, so
   // that it holds what such a session committed: of a table it emptied, the rows it put back.
   @Override
-  void lock(Connection connection, Provider provider, List<Item> tables) throws QueryException {
+  void lock(Sql sql, List<Item> tables) throws QueryException {
+    var provider = sql.provider();
     if (tables.isEmpty()) {
       return;
     }
     var names = tables.stream()
         .map(t -> "ONLY " + Rows.qualified(provider, t.container(), t.name()))
         .collect(Collectors.joining(", "));
-    var was = Sql.one(
-        connection, provider, LOCK_TIMEOUT, "SHOW " + LOCK_TIMEOUT, rows -> rows.getString(1));
-    Sql.execute(
-        connection, provider, "SET LOCAL " + LOCK_TIMEOUT + " = '" + LOCK_WAIT.toMillis() + "ms'");
+    var was = sql.one(LOCK_TIMEOUT, "SHOW " + LOCK_TIMEOUT, rows -> rows.getString(1));
+    sql.execute("SET LOCAL " + LOCK_TIMEOUT + " = '" + LOCK_WAIT.toMillis() + "ms'");
     try {
-      Sql.execute(connection, provider, "LOCK TABLE " + names + " IN ACCESS SHARE MODE");
+      sql.execute("LOCK TABLE " + names + " IN ACCESS SHARE MODE");
     } catch (QueryException e) {
       if (e.getCause() instanceof SQLException cause && LOCKED.equals(cause.getSQLState())) {
         throw QueryException.of(
@@ -97,19 +94,12 @@ public final class PostgreSqlDump extends DumpDialect {
       }
       throw e;
     }
-    setting(connection, provider, LOCK_TIMEOUT, was);
+    setting(sql, LOCK_TIMEOUT, was);
   }
 
   // For the transaction alone.
-  private static void setting(Connection connection, Provider provider, String name, String value)
-      throws QueryException {
-    Sql.rows(
-        connection,
-        provider,
-        "SELECT pg_catalog.set_config(?, ?, true)",
-        rows -> rows.getString(1),
-        name,
-        value);
+  private static void setting(Sql sql, String name, String value) throws QueryException {
+    sql.rows("SELECT pg_catalog.set_config(?, ?, true)", rows -> rows.getString(1), name, value);
   }
 
   private record Insertable(
@@ -119,12 +109,10 @@ public final class PostgreSqlDump extends DumpDialect {
   // generated, a value of a kind the literal writes as such, otherwise the server's text. A table
   // without such a column has its rows as many INSERTs of its defaults.
   @Override
-  Optional<Data> data(Connection connection, Provider provider, Item table, boolean alone)
-      throws QueryException {
+  Optional<Data> data(Sql sql, Item table, boolean alone) throws QueryException {
+    var provider = sql.provider();
     var name = Rows.qualified(provider, table.container(), table.name());
-    var read = Sql.one(
-        connection,
-        provider,
+    var read = sql.one(
         table.shown(),
         """
         SELECT c.relkind,
@@ -144,7 +132,7 @@ public final class PostgreSqlDump extends DumpDialect {
     if (read.kind().equals("p")) {
       return Optional.empty();
     }
-    var around = alone ? around(connection, provider, name, read) : Around.NOTHING;
+    var around = alone ? around(sql, name, read) : Around.NOTHING;
     if (read.columns().isEmpty()) {
       return Optional.of(new Data(
           "SELECT FROM ONLY " + name,
@@ -179,13 +167,11 @@ public final class PostgreSqlDump extends DumpDialect {
   // back after them: its triggers, which go back to the mode each had; forced row security, which
   // would hold its owner to the policies; constraints that are not valid, which old rows need not
   // pass, dropped and added again as they were.
-  private static Around around(
-      Connection connection, Provider provider, String name, Insertable read)
-      throws QueryException {
+  private static Around around(Sql sql, String name, Insertable read) throws QueryException {
+    var provider = sql.provider();
     var before = new ArrayList<String>();
     var after = new ArrayList<String>();
-    var triggers = Sql.rows(
-        connection, provider, """
+    var triggers = sql.rows("""
         SELECT t.tgname, t.tgenabled FROM pg_catalog.pg_trigger t
         WHERE t.tgrelid = pg_catalog.to_regclass(?) AND NOT t.tgisinternal
         ORDER BY t.tgname""", rows -> new Enabled(rows.getString(1), rows.getString(2)), name);
@@ -207,17 +193,12 @@ public final class PostgreSqlDump extends DumpDialect {
       before.add(ALTER_ONLY + name + " NO FORCE ROW LEVEL SECURITY");
       after.add(ALTER_ONLY + name + " FORCE ROW LEVEL SECURITY");
     }
-    var checks = Sql.rows(
-        connection,
-        provider,
-        """
+    var checks = sql.rows("""
         SELECT co.conname, pg_catalog.pg_get_constraintdef(co.oid)
         FROM pg_catalog.pg_constraint co
         WHERE co.conrelid = pg_catalog.to_regclass(?) AND NOT co.convalidated
         AND co.contype IN ('c', 'f') AND co.conislocal
-        ORDER BY co.conname""",
-        rows -> new NotValid(rows.getString(1), rows.getString(2)),
-        name);
+        ORDER BY co.conname""", rows -> new NotValid(rows.getString(1), rows.getString(2)), name);
     for (var check : checks) {
       var constraint = provider.quote(check.name());
       before.add(ALTER + name + " DROP CONSTRAINT IF EXISTS " + constraint);
@@ -317,7 +298,8 @@ public final class PostgreSqlDump extends DumpDialect {
   }
 
   @Override
-  List<String> create(Connection connection, Provider provider, List<Container> containers) {
+  List<String> create(Sql sql, List<Container> containers) {
+    var provider = sql.provider();
     return containers.stream()
         .map(c -> "CREATE SCHEMA IF NOT EXISTS " + provider.quote(c.name()))
         .toList();

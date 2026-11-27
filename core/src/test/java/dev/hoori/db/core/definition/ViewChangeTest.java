@@ -40,16 +40,105 @@ class ViewChangeTest {
     var change = ViewChange.replace(Provider.MYSQL, read(view), """
         -- as shown
         CREATE ALGORITHM=UNDEFINED DEFINER=`me`@`%` SQL SECURITY DEFINER VIEW `v` AS select 1;
-        create or replace view `w` as select 2;
+        create or replace view shop.v as select 2;
         ALTER VIEW `v` AS select 3""");
     assertEquals(
         List.of(
             "CREATE OR REPLACE ALGORITHM=UNDEFINED DEFINER=`me`@`%` SQL SECURITY DEFINER VIEW `v` AS"
                 + " select 1",
-            "create or replace view `w` as select 2", "ALTER VIEW `v` AS select 3"),
+            "create or replace view shop.v as select 2", "ALTER VIEW `v` AS select 3"),
         change.statements());
     assertEquals(ViewChange.Kind.REPLACE, change.kind());
     assertFalse(change.transaction(), "MySQL commits each statement of DDL");
+  }
+
+  @Test
+  void aDefinerOfAnyQuotedNameKeepsTheReplaceInPlace() {
+    var view = new Table(SHOP, "v", Table.Kind.VIEW);
+    for (var definer : List.of(
+        "`my user`@`%`", "'my user'@'localhost'", "`a``b`@`%`", "CURRENT_USER", "CURRENT_USER()")) {
+      var created = "CREATE ALGORITHM=MERGE DEFINER = " + definer
+          + " SQL SECURITY DEFINER VIEW `v` AS select 1";
+      assertEquals(
+          List.of(created.replaceFirst("CREATE", "CREATE OR REPLACE")),
+          ViewChange.replace(Provider.MARIADB, read(view), created + ";").statements(),
+          definer);
+    }
+  }
+
+  @Test
+  void aDefinitionThatCreatesAViewOfAnotherNameIsRefused() {
+    var mine = new Table(SHOP, "v", Table.Kind.VIEW);
+    var other = assertThrows(
+        ViewChange.OtherView.class,
+        () -> ViewChange.replace(Provider.MYSQL, read(mine), "CREATE VIEW `w` AS select 1"));
+    assertEquals("w", other.named());
+    assertThrows(
+        ViewChange.OtherView.class,
+        () -> ViewChange.replace(Provider.MYSQL, read(mine), "CREATE VIEW other.v AS select 1"));
+    var view = new Table(PUBLIC, "v", Table.Kind.VIEW);
+    assertThrows(
+        ViewChange.OtherView.class,
+        () -> ViewChange.replace(
+            Provider.POSTGRESQL, read(view), "CREATE VIEW public.\"V\" AS SELECT 1"));
+    assertThrows(
+        ViewChange.OtherView.class,
+        () -> ViewChange.recreate(
+            Provider.POSTGRESQL, read(view), "CREATE VIEW sales.v AS SELECT 1"));
+    // Unquoted, PostgreSQL folds the name to lower case: the same view.
+    assertEquals(
+        List.of("CREATE OR REPLACE VIEW Public.V AS SELECT 1"),
+        ViewChange.replace(Provider.POSTGRESQL, read(view), "CREATE VIEW Public.V AS SELECT 1")
+            .statements());
+  }
+
+  @Test
+  void aReplaceTakesFromTheViewWhatItsDefinitionNoLongerSets() {
+    var view = new Table(PUBLIC, "v", Table.Kind.VIEW);
+    var was = new ViewDefinition(
+        view,
+        read(view).definition(),
+        References.NONE,
+        false,
+        List.of(),
+        List.of("COMMENT ON VIEW \"public\".\"v\" IS NULL"));
+    assertEquals(
+        List.of(
+            "CREATE OR REPLACE VIEW public.v AS SELECT 2",
+            "COMMENT ON VIEW \"public\".\"v\" IS NULL"),
+        ViewChange.replace(Provider.POSTGRESQL, was, "CREATE VIEW public.v AS SELECT 2;")
+            .statements(),
+        "The comment line deleted, the comment goes");
+    var kept = ViewChange.replace(
+        Provider.POSTGRESQL,
+        was,
+        "CREATE VIEW public.v AS SELECT 2;\nCOMMENT ON VIEW public.v IS 'kept';");
+    assertEquals(
+        List.of(
+            "CREATE OR REPLACE VIEW public.v AS SELECT 2",
+            "COMMENT ON VIEW \"public\".\"v\" IS NULL",
+            "COMMENT ON VIEW public.v IS 'kept'"),
+        kept.statements());
+    assertTrue(kept.transaction());
+  }
+
+  @Test
+  void aDropAndCreateGivesBackWhatTheDropTook() {
+    var view = new Table(PUBLIC, "v", Table.Kind.VIEW);
+    var was = new ViewDefinition(
+        view,
+        read(view).definition(),
+        References.NONE,
+        false,
+        List.of("ALTER VIEW \"public\".\"v\" OWNER TO \"owner\""),
+        List.of("COMMENT ON VIEW \"public\".\"v\" IS NULL"));
+    assertEquals(
+        List.of(
+            "DROP VIEW \"public\".\"v\"",
+            "CREATE VIEW public.v AS SELECT 2",
+            "ALTER VIEW \"public\".\"v\" OWNER TO \"owner\""),
+        ViewChange.recreate(Provider.POSTGRESQL, was, "CREATE VIEW public.v AS SELECT 2")
+            .statements());
   }
 
   @Test

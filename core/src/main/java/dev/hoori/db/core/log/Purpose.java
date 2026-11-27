@@ -24,9 +24,6 @@ public enum Purpose {
   MONITOR,
   /** An export to a file of SQL: the snapshot it reads in, its objects' definitions and rows. */
   EXPORT,
-  /**
-   * An object's definition: reading it and what it uses and what uses it, and what creates,
-   * replaces, drops or refreshes it.
-   */
+  /** The definitions of objects: reading, creating, altering and dropping them. */
   DEFINITION
 }

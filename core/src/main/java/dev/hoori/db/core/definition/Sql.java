@@ -12,47 +12,40 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
- * What reading definitions sends, and what changes them or exports them: each statement through
- * {@link Journal}, as the purpose that the caller bound with {@link #as}. Only core's code that
- * builds on definitions uses it, as the export does.
+ * Where definitions are read, changed or exported: a connection, the provider that speaks on it,
+ * and the purpose that what it sends is recorded as through {@link Journal}, which its caller
+ * names. Only core's code that builds on definitions uses it, as the export does.
  */
-public final class Sql {
+public record Sql(Connection connection, Provider provider, Purpose purpose) {
 
-  private static final ScopedValue<Purpose> PURPOSE = ScopedValue.newInstance();
-
-  private Sql() {}
+  public Sql {
+    Objects.requireNonNull(connection, "connection");
+    Objects.requireNonNull(provider, "provider");
+    Objects.requireNonNull(purpose, "purpose");
+  }
 
   /** How a row of a query becomes a value. */
   public interface Row<T> {
     T read(ResultSet rows) throws SQLException;
   }
 
-  /** The call, with what it sends here recorded as sent for the purpose. */
-  public static <T, E extends Exception> T as(Purpose purpose, Journal.Call<T, E> call) throws E {
-    return ScopedValue.where(PURPOSE, purpose).call(call::call);
-  }
-
-  /**
-   * What is sent now is sent for.
-   *
-   * @throws java.util.NoSuchElementException where no caller bound one with {@link #as}
-   */
-  public static Purpose purpose() {
-    return PURPOSE.get();
-  }
-
   /** Runs the statement, which gives no rows that count. */
-  public static void execute(Connection connection, Provider provider, String sql)
-      throws QueryException {
+  public void execute(String sql) throws QueryException {
     Journal.sql(
         provider,
-        purpose(),
+        purpose,
         sql,
         done -> Outcome.DONE,
         () -> Query.run(connection, provider, sql, statement -> statement.execute()));
+  }
+
+  /** Runs the step of the connection itself, as a change of auto-commit, recorded as called. */
+  public void call(String called, Query.Step<?> step) throws QueryException {
+    Journal.call(purpose, called, () -> Query.run(connection, provider, step));
   }
 
   /**
@@ -60,19 +53,15 @@ public final class Sql {
    * an interrupt, as what cancelled the export leaves the snapshot open, and never longer, as a
    * server that no longer answers does not keep it.
    */
-  public static void ending(
-      Connection connection, Provider provider, String called, Query.Step<?> step)
-      throws QueryException {
-    Journal.call(
-        purpose(), called, () -> Query.within(connection, provider, Execution.ENDING, step));
+  public void ending(String called, Query.Step<?> step) throws QueryException {
+    Journal.call(purpose, called, () -> Query.within(connection, provider, Execution.ENDING, step));
   }
 
-  /** Runs the statement as {@link #ending} runs a step. */
-  public static void ending(Connection connection, Provider provider, String sql)
-      throws QueryException {
+  /** Runs the statement as {@link #ending(String, Query.Step)} runs a step. */
+  public void ending(String sql) throws QueryException {
     Journal.sql(
         provider,
-        purpose(),
+        purpose,
         sql,
         done -> Outcome.DONE,
         () -> Query.within(connection, provider, Execution.ENDING, () -> {
@@ -99,12 +88,10 @@ public final class Sql {
   }
 
   /** The rows of the query, each as the row makes it, with the texts as its parameters. */
-  public static <T> List<T> rows(
-      Connection connection, Provider provider, String sql, Row<T> row, String... parameters)
-      throws QueryException {
+  public <T> List<T> rows(String sql, Row<T> row, String... parameters) throws QueryException {
     return Journal.sql(
         provider,
-        purpose(),
+        purpose,
         sql,
         read -> Outcome.rows(read.size()),
         () -> Query.run(connection, provider, sql, statement -> {
@@ -122,31 +109,28 @@ public final class Sql {
   }
 
   /** The rows of the query that the row makes something of, as {@link #rows} reads them. */
-  public static <T> List<T> some(
-      Connection connection,
-      Provider provider,
-      String sql,
-      Row<Optional<T>> row,
-      String... parameters)
+  public <T> List<T> some(String sql, Row<Optional<T>> row, String... parameters)
       throws QueryException {
-    return rows(connection, provider, sql, row, parameters).stream()
-        .flatMap(Optional::stream)
-        .toList();
+    return rows(sql, row, parameters).stream().flatMap(Optional::stream).toList();
   }
 
   /** The one row of the query, as the row makes it; not found where it gives none. */
-  public static <T> T one(
-      Connection connection,
-      Provider provider,
-      String what,
-      String sql,
-      Row<T> row,
-      String... parameters)
+  public <T> T one(String what, String sql, Row<T> row, String... parameters)
       throws QueryException {
-    var read = rows(connection, provider, sql, row, parameters);
+    var read = rows(sql, row, parameters);
     if (read.isEmpty()) {
       throw QueryException.of(QueryException.Failure.NOT_FOUND, what + " no longer exists");
     }
     return read.getFirst();
+  }
+
+  /** The literal of the text, as the provider writes one. */
+  public String literal(String text) {
+    return provider.dialect().rows().literal(text);
+  }
+
+  /** The name, quoted as the provider quotes one. */
+  public String quote(String name) {
+    return provider.quote(name);
   }
 }

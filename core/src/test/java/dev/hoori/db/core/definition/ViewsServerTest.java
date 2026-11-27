@@ -3,6 +3,7 @@ package dev.hoori.db.core.definition;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -50,7 +51,8 @@ class ViewsServerTest {
         var text = read.text();
         assertTrue(text.contains("VIEW"), text);
         assertTrue(text.endsWith(";\n"), text);
-        assertFalse(text.contains("DEFINER="), text);
+        // As the server has it, to change it there: with its definer, which an export leaves out.
+        assertEquals(provider != Provider.POSTGRESQL, text.contains("DEFINER="), text);
         assertEquals(
             List.of(new Reference(database.container(), Reference.Kind.TABLE, "item", "")),
             read.references().uses());
@@ -106,7 +108,7 @@ class ViewsServerTest {
         var edited = "CREATE VIEW " + database.qualified("named") + " AS SELECT name FROM "
             + database.qualified("item") + ";";
         var changed = views.change(ViewChange.replace(provider, read, edited));
-        if (!provider.dialect().definitions().changesInTransaction()) {
+        if (!provider.dialect().views().changesInTransaction()) {
           // MariaDB and MySQL take any columns.
           assertInstanceOf(Views.Done.class, changed);
           assertEquals(List.of("name"), database.columns(connection, view));
@@ -149,22 +151,159 @@ class ViewsServerTest {
   @ParameterizedTest
   @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aDropWithWhatDependsOnItTakesThemWhereTheServerCan(Provider provider) throws Exception {
-    assumeTrue(provider.dialect().definitions().dropsDependents(), "Only PostgreSQL cascades");
+    assumeTrue(provider.dialect().views().dropsDependents(), "Only PostgreSQL cascades");
     try (var database = new Scratch(provider)) {
       database.run(
           "CREATE TABLE item (id INT PRIMARY KEY)",
           "CREATE VIEW first AS SELECT id FROM item",
-          "CREATE VIEW second AS SELECT id FROM first");
+          "CREATE VIEW second AS SELECT id FROM first",
+          "CREATE VIEW third AS SELECT id FROM second");
       try (var connection = database.open()) {
         var views = views(connection, provider);
         var first = database.view("first");
-        assertThrows(
-            QueryException.class, () -> views.change(ViewChange.drop(provider, first, false)));
+        // Refused, the server names all that a drop with it would take, also what uses that.
+        var refused = assertInstanceOf(
+            Views.DependedOn.class, views.change(ViewChange.drop(provider, first, false)));
+        assertTrue(refused.words().contains("second"), refused.words());
+        assertTrue(refused.words().contains("third"), refused.words());
         assertTrue(database.tables(connection).contains(database.view("second")));
         var cascade = ViewChange.drop(provider, first, true);
         assertTrue(cascade.statements().getFirst().endsWith(" CASCADE"), cascade.toString());
         views.change(cascade);
-        assertFalse(database.tables(connection).contains(database.view("second")));
+        assertFalse(database.tables(connection).contains(database.view("third")));
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void aSavedViewKeepsItsDefiner(Provider provider) throws Exception {
+    assumeTrue(provider != Provider.POSTGRESQL, "Only MariaDB and MySQL define views by a user");
+    var user = "definer_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+    try (var database = new Scratch(provider)) {
+      database.run(
+          "CREATE USER '" + user + "'@'%' IDENTIFIED BY 'Secret-1234'",
+          "CREATE TABLE item (id INT PRIMARY KEY, name VARCHAR(20))",
+          "CREATE DEFINER = '" + user + "'@'%' SQL SECURITY DEFINER VIEW named"
+              + " AS SELECT id, name FROM item");
+      try (var connection = database.open()) {
+        var views = views(connection, provider);
+        var read = views.read(database.view("named"));
+        var edited = read.text().replace("from `item`", "from `item` where `name` is not null");
+        assertNotEquals(read.text(), edited, read.text());
+        assertInstanceOf(
+            Views.Done.class, views.change(ViewChange.replace(provider, read, edited)));
+        assertEquals(
+            List.of(user + "@%"),
+            database.strings(
+                connection,
+                "SELECT DEFINER FROM information_schema.VIEWS WHERE TABLE_SCHEMA = '"
+                    + database.name + "' AND TABLE_NAME = 'named'"),
+            "Saved by root, defined by the user as before");
+      }
+    } finally {
+      try (var admin = new Scratch(provider)) {
+        admin.run("DROP USER IF EXISTS '" + user + "'@'%'");
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void whatAViewUsesInAnotherDatabaseIsFound(Provider provider) throws Exception {
+    assumeTrue(provider != Provider.POSTGRESQL, "A PostgreSQL view reads its own database alone");
+    try (var database = new Scratch(provider);
+        var other = new Scratch(provider)) {
+      other.run("CREATE TABLE item (id INT PRIMARY KEY)");
+      database.run("CREATE VIEW elsewhere AS SELECT id FROM " + other.qualified("item"));
+      try (var connection = database.open()) {
+        assertEquals(
+            List.of(new Reference(other.container(), Reference.Kind.TABLE, "item", "")),
+            views(connection, provider)
+                .read(database.view("elsewhere"))
+                .references()
+                .uses());
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void aDropAndCreateGivesBackWhatTheDropTakes(Provider provider) throws Exception {
+    assumeTrue(provider == Provider.POSTGRESQL, "Only PostgreSQL drops and creates a view");
+    var role = "owner_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+    try (var database = new Scratch(provider)) {
+      database.run(
+          "CREATE ROLE " + role,
+          "CREATE TABLE item (id INT PRIMARY KEY, name VARCHAR(20))",
+          "CREATE VIEW named AS SELECT id, name FROM item",
+          "COMMENT ON COLUMN named.name IS 'What it is called'",
+          "ALTER VIEW named ALTER COLUMN name SET DEFAULT 'none'",
+          "CREATE FUNCTION add_named() RETURNS trigger LANGUAGE plpgsql AS"
+              + " $$ BEGIN INSERT INTO item VALUES (NEW.id, NEW.name); RETURN NEW; END $$",
+          "CREATE TRIGGER adds INSTEAD OF INSERT ON named FOR EACH ROW EXECUTE FUNCTION"
+              + " add_named()",
+          "CREATE RULE keeps AS ON DELETE TO named DO INSTEAD NOTHING",
+          "ALTER VIEW named OWNER TO " + role);
+      try (var connection = database.open()) {
+        var views = views(connection, provider);
+        var view = database.view("named");
+        var read = views.read(view);
+        assertTrue(
+            read.text().contains("COMMENT ON COLUMN \"public\".\"named\".\"name\""), read.text());
+        assertTrue(read.text().contains("SET DEFAULT 'none'"), read.text());
+        // The column qualified or not, as the server's version writes a view of one table.
+        var edited = read.text()
+            .replaceFirst("((?:item\\.)?name)(\\s+FROM)", "$1 AS label$2")
+            .replace("\"name\"", "\"label\"");
+        var change = ViewChange.recreate(provider, read, edited);
+        assertInstanceOf(Views.Done.class, views.change(change));
+        assertEquals(List.of("id", "label"), database.columns(connection, view));
+        assertEquals(
+            List.of(role),
+            database.strings(
+                connection,
+                "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'public.named'::regclass"));
+        assertEquals(
+            List.of("adds"),
+            database.strings(
+                connection,
+                "SELECT tgname FROM pg_trigger WHERE tgrelid = 'public.named'::regclass"));
+        assertEquals(
+            List.of("keeps"),
+            database.strings(
+                connection,
+                "SELECT rulename FROM pg_rewrite WHERE ev_class = 'public.named'::regclass"
+                    + " AND rulename <> '_RETURN'"));
+        assertEquals(
+            List.of("What it is called"),
+            database.strings(connection, "SELECT col_description('public.named'::regclass, 2)"));
+      }
+    } finally {
+      try (var admin = new Scratch(provider)) {
+        admin.run("DROP ROLE IF EXISTS " + role);
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void aCommentLeftOutOfTheDefinitionGoesWithTheReplace(Provider provider) throws Exception {
+    assumeTrue(provider == Provider.POSTGRESQL, "Only PostgreSQL keeps a view's comments apart");
+    try (var database = new Scratch(provider)) {
+      database.run(
+          "CREATE TABLE item (id INT PRIMARY KEY)",
+          "CREATE VIEW v AS SELECT id FROM item",
+          "COMMENT ON VIEW v IS 'Gone soon'");
+      try (var connection = database.open()) {
+        var views = views(connection, provider);
+        var read = views.read(database.view("v"));
+        var edited = read.text().substring(0, read.text().indexOf("COMMENT ON VIEW"));
+        assertInstanceOf(
+            Views.Done.class, views.change(ViewChange.replace(provider, read, edited)));
+        assertEquals(
+            java.util.Arrays.asList((String) null),
+            database.strings(connection, "SELECT obj_description('public.v'::regclass)"));
       }
     }
   }
@@ -289,6 +428,17 @@ class ViewsServerTest {
       return Catalog.columns(connection, provider, table).stream()
           .map(c -> c.name())
           .toList();
+    }
+
+    List<String> strings(Connection connection, String query) throws SQLException {
+      try (var statement = connection.createStatement();
+          var rows = statement.executeQuery(query)) {
+        var read = new ArrayList<String>();
+        while (rows.next()) {
+          read.add(rows.getString(1));
+        }
+        return read;
+      }
     }
 
     long count(Connection connection, String object) throws SQLException {
