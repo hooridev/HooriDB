@@ -1455,8 +1455,16 @@ final class State {
   }
 
   /**
-   * What may hold uncommitted work, of the connection or all: consoles, tables, and a file that runs
-   * in one transaction.
+   * What ending the connection's sessions would lose, of the connection or all: as {@link
+   * #guarded}, without the routines' edits, which stay in their tabs.
+   */
+  List<Guard.Guarded> sessions(UUID id) {
+    return guarded(id).stream().filter(g -> !(g instanceof RoutineTab)).toList();
+  }
+
+  /**
+   * What may hold uncommitted work, of the connection or all: consoles, tables, routines with edits
+   * not saved, and a file that runs in one transaction.
    */
   List<Guard.Guarded> guarded(UUID id) {
     var all = new ArrayList<Guard.Guarded>();

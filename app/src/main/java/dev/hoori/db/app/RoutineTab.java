@@ -8,6 +8,7 @@ import static com.rethinkj.ui.kit.Button.button;
 
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.El;
+import com.rethinkj.ui.Key;
 import com.rethinkj.ui.Style;
 import com.rethinkj.ui.editor.CodeEditor;
 import com.rethinkj.ui.kit.Button;
@@ -16,12 +17,14 @@ import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.Checkbox;
 import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.Divider;
+import com.rethinkj.ui.kit.Form;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Prop;
 import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
+import com.rethinkj.ui.kit.Tooltip;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Routine;
@@ -45,8 +48,13 @@ import java.util.UUID;
  * a session opened for it alone, never the tree's, which is closed when the change ends, and the
  * tree reads the routines again after it. A new routine starts from its dialect's template. Only
  * the app's thread uses it.
+ *
+ * <p>Edits not saved are guarded as a table's changes are: closing the tab, Exit and deleting the
+ * connection ask first. A change that runs goes on to its end once it was sent, also where the tab
+ * closes, and Exit waits for it; what it ends with then goes to the notices. Where the server
+ * drops the routine before it creates it again, Cancel stops the change only until the DROP.
  */
-final class RoutineTab implements Tab {
+final class RoutineTab implements Tab, Guard.Guarded {
 
   private static final String ERROR_LAYER = "error";
   private static final String CANCEL = ConsoleTab.CANCEL_BUTTON;
@@ -61,12 +69,13 @@ final class RoutineTab implements Tab {
   record Preview(boolean drop, Routines.Change change) implements Asked {}
 
   /** The form of a Run: a value for each argument, or NULL. */
-  static final class Form implements Asked {
+  static final class Arguments implements Asked {
     final List<Routine.Parameter> arguments;
     final String[] values;
     final boolean[] nulls;
+    boolean tried; // Run was pressed, so that a field without a value says so
 
-    Form(Routine routine) {
+    Arguments(Routine routine) {
       arguments = routine.arguments();
       values = new String[arguments.size()];
       Arrays.fill(values, "");
@@ -81,22 +90,38 @@ final class RoutineTab implements Tab {
       }
       return given;
     }
+
+    /**
+     * Why the argument has no value, as a field of a type whose values are never empty that is
+     * empty and not NULL; else null.
+     */
+    String missing(int i, Provider provider) {
+      return !nulls[i]
+              && values[i].isEmpty()
+              && !provider.dialect().routines().takesEmpty(arguments.get(i).type())
+          ? "Enter a value of " + arguments.get(i).type() + ", or check NULL."
+          : null;
+    }
   }
 
   /** What a change did: how it went, and the routine and its source as they are after a Save. */
-  private record Changed(Routines.Outcome outcome, Routine routine, String source) {}
+  private record Changed(Routines.Outcome outcome, Routine routine, Routine.Source source) {}
 
   final UUID id;
   final Container container;
   Routine routine; // null for a new one, and for one dropped
   private final Routine.Kind kind; // of a new one
   String text;
-  private String source; // as read, or as saved; null for a new one
+  private Routine.Source source; // as read, or as saved; null for a new one
+  private String initial = ""; // the text a new routine began with, its template
+  // The routine was dropped and could not be created again: its source is all that is left.
+  private boolean lost;
   boolean editing; // read-only until the user edits it
   final CodeEditor.State editor = new CodeEditor.State().inlineDiagnostics(true);
   Lane.Asked reading; // the source on its way, or null
   Lane.Asked changing; // the change under way, or null
-  private Lane session; // the change's own session while it runs
+  private Routines.Applying applying; // what cancels the change under way, or null
+  private boolean cancelling; // Cancel was pressed, and the change says how it ended
   Problem problem; // why the source could not be read, or the last change failed; or null
   Asked asked; // the question before a change, or the form of a run; or null
   String said; // what the status line says for a while, or null
@@ -122,6 +147,7 @@ final class RoutineTab implements Tab {
   static RoutineTab create(UUID id, Container container, Routine.Kind kind, Provider provider) {
     var tab = new RoutineTab(id, container, null, kind);
     tab.text = provider.dialect().routines().template(kind, container);
+    tab.initial = tab.text;
     tab.editing = true;
     return tab;
   }
@@ -146,9 +172,18 @@ final class RoutineTab implements Tab {
 
   /** Whether the text holds edits that are not saved. */
   boolean edited() {
-    return editing && !text.equals(source == null ? "" : source);
+    return editing && !text.equals(base());
   }
 
+  // The text as it was read or saved, or as a new routine began.
+  private String base() {
+    return source != null ? source.statement() : initial;
+  }
+
+  /**
+   * The tab closes. A change under way goes on to its end, as one between its DROP and its CREATE
+   * must, on its own session, which closes then; how it ended goes to the notices.
+   */
   @Override
   public void close() {
     closed = true;
@@ -156,23 +191,71 @@ final class RoutineTab implements Tab {
       reading.cancel();
       reading = null;
     }
-    // A change that was sent may well take effect: what it does is the server's.
-    if (changing != null) {
-      changing.cancel();
-      changing = null;
+  }
+
+  // Guarded: edits not saved, which closing the tab, Exit or deleting the connection would lose
+
+  @Override
+  public UUID connectionId() {
+    return id;
+  }
+
+  /**
+   * Edits not saved are at stake, and the source of a routine that could not be created again;
+   * there is no transaction.
+   */
+  @Override
+  public boolean atStake(Guard.Scope scope) {
+    return scope != Guard.Scope.TRANSACTION && (edited() || lost);
+  }
+
+  /** What an act that would lose the edits asks first: discard them, and go on, or keep them. */
+  @Override
+  public El question(State s) {
+    if (!(s.guard.pending instanceof Guard.Pending.Question asked) || asked.tab() != this) {
+      return null;
     }
-    if (session != null) {
-      session.close();
-      session = null;
-    }
+    Runnable keep = () -> s.guard.pending = null;
+    El keeping = button(SECONDARY, "Keep editing", keep).key("answer-keep");
+    El discard = button(
+            SECONDARY,
+            "Discard",
+            () -> {
+              s.guard.pending = null;
+              discard();
+              asked.then().run();
+            },
+            Button.options().tone(Button.Tone.DANGER))
+        .key("answer-discard");
+    var what = lost
+        ? name() + " is no longer on the server, and its source is only here."
+        : name() + " has edits that are not saved.";
+    return Dialog.dialog(
+            "Discard the edits?",
+            col()
+                .w(ConnectionDialog.width())
+                .child(Label.label(what + " Discard them, and " + asked.what() + "?")
+                    .wrapText()),
+            List.of(keeping, discard),
+            keeping,
+            keep)
+        .key("routine-question");
+  }
+
+  // The edits are given up: the text as it was read, or as the new routine began.
+  private void discard() {
+    lost = false;
+    text = base();
+    editing = routine == null && source == null;
+    clearError();
   }
 
   // Handlers
 
   /** Reads the routine's source anew, on the tree's connection, leaving what was edited. */
   void read(State s) {
-    if (routine == null || closed) {
-      return;
+    if (routine == null || closed || routine.kind() == Routine.Kind.AGGREGATE) {
+      return; // the server writes no source of an aggregate, as the note says
     }
     var lane = s.catalog.lane(s, id, container);
     if (lane == null) {
@@ -196,7 +279,7 @@ final class RoutineTab implements Tab {
           }
           source = read;
           if (!editing) {
-            show(read);
+            show(read.statement());
           }
         },
         error -> {
@@ -221,7 +304,7 @@ final class RoutineTab implements Tab {
 
   /** The tree's connection connected anew: a source that could not be read is read now. */
   void connected(State s) {
-    if (routine != null && source == null && reading == null && !editing) {
+    if (routine != null && source == null && reading == null && !editing && !lost) {
       read(s);
     }
   }
@@ -238,23 +321,50 @@ final class RoutineTab implements Tab {
     if (changing != null || source == null) {
       return;
     }
-    editing = false;
+    // A routine that could not be created again stays editable, so that Save creates it.
+    editing = lost;
     problem = null;
-    show(source);
+    show(source.statement());
   }
 
   /** Save…: the statements that save the text, shown first. */
   void askSave(State s) {
     var provider = provider(s);
-    if (provider == null || !editing || changing != null) {
+    if (provider == null || !saves(s)) {
       return;
     }
-    var change = Routines.save(provider, routine, source, text);
-    if (change.statements().getLast().isEmpty()) {
+    if (Routines.statement(text, provider).isEmpty()) {
       say(s, "No statement to save");
       return;
     }
-    asked = new Preview(false, change);
+    var refused = Routines.refused(provider, routine, text);
+    if (refused.isPresent()) {
+      problem = new Problem("Not saved", refused.get());
+      return;
+    }
+    asked = new Preview(false, Routines.save(provider, routine, source, text));
+  }
+
+  /**
+   * Whether Save… is open: edits not saved, or a routine to create again, on a connection that
+   * changes routines, while nothing reads or changes it.
+   */
+  private boolean saves(State s) {
+    return (edited() || lost || routine == null && editing)
+        && changing == null
+        && reading == null
+        && s.catalog.changesRoutines(s, id);
+  }
+
+  /** Control+S in the editor: Save…, where its button is open. */
+  private boolean key(State s, Key key) {
+    if (key.modifiers() != Key.CONTROL || !key.name().equals("S")) {
+      return false;
+    }
+    if (editing && saves(s) && asked == null) {
+      askSave(s);
+    }
+    return true;
   }
 
   /** Drop…: the statement that drops the routine, shown first. */
@@ -268,10 +378,13 @@ final class RoutineTab implements Tab {
 
   /** Run…: the form of the values to call the routine with. */
   void askRun(State s) {
-    if (routine == null || routine.kind() == Routine.Kind.AGGREGATE || provider(s) == null) {
+    var provider = provider(s);
+    if (routine == null
+        || provider == null
+        || provider.dialect().routines().uncalled(routine).isPresent()) {
       return;
     }
-    asked = new Form(routine);
+    asked = new Arguments(routine);
   }
 
   /** The question or the form is dismissed. */
@@ -281,19 +394,28 @@ final class RoutineTab implements Tab {
 
   /** Run: the call, in a console of its own on the routine's connection and database. */
   void run(State s) {
-    if (!(asked instanceof Form form) || routine == null) {
+    if (!(asked instanceof Arguments form) || routine == null) {
       return;
     }
     var provider = provider(s);
     if (provider == null) {
       return;
     }
+    form.tried = true;
+    for (int i = 0; i < form.arguments.size(); i++) {
+      if (form.missing(i, provider) != null) {
+        return; // the field says why
+      }
+    }
     asked = null;
     var calls = provider.dialect().routines().call(routine, form.values());
     s.openCall(id, s.tabs.groupOf(this), container.database().name(), calls);
   }
 
-  /** Save or Drop, as the preview shows them, on a session opened for the change alone. */
+  /**
+   * Save or Drop, as the preview shows them, on a session opened for the change alone, which Exit
+   * waits for while the change runs and closes.
+   */
   void proceed(State s) {
     if (!(asked instanceof Preview(var drop, var change)) || changing != null) {
       return;
@@ -311,33 +433,36 @@ final class RoutineTab implements Tab {
     }
     // Its copy of the password masks a console's messages; a change has none to mask.
     Arrays.fill(opened.password(), '\0');
-    session = opened.lane();
     asked = null;
     problem = null;
+    cancelling = false;
     clearError();
-    var lane = session;
+    var lane = opened.lane();
     var replaced = routine;
     var in = container;
     var sent = text;
+    var cancels = new Routines.Applying();
+    applying = cancels;
+    s.closing(); // Exit waits for the change, then for its session's closing
     changing = lane.ask(
         s.app,
         drop ? "drop " + replaced.name() : "save a routine",
         Lane.Priority.VIEW,
-        link -> drop ? new Changed(link.define(change), null, null) : saved(link, change, in),
+        link -> drop
+            ? new Changed(link.define(in, change, cancels), null, null)
+            : saved(link, change, in, cancels),
         changed -> {
-          changing = null;
-          closeSession(lane);
+          ended(s, lane);
+          if (closed || s.guard.quitting()) {
+            untaken(s, drop, replaced, changed.outcome());
+          }
           if (!closed) {
-            changed(s, drop, replaced, sent, changed);
+            changed(s, drop, replaced, sent, change, changed);
           }
         },
         error -> {
-          changing = null;
-          closeSession(lane);
-          if (closed || error instanceof InterruptedException) {
-            return;
-          }
-          problem = switch (error) {
+          ended(s, lane);
+          var failed = switch (error) {
             case ConnectionException e ->
               new Problem(
                   "Not connected", "The session for the change could not be opened: " + e.detail());
@@ -345,32 +470,47 @@ final class RoutineTab implements Tab {
             default ->
               new Problem(drop ? "Not dropped" : "Not saved", String.valueOf(error.getMessage()));
           };
+          if (closed || s.guard.quitting()) {
+            s.notice(
+                connection(s), part(replaced), failed.title() + ": " + failed.text(), true, null);
+          }
+          if (!closed) {
+            problem = failed;
+          }
         });
   }
 
-  /** Cancel while a change runs: whether it took effect is the server's to say. */
+  // The change ended: its session closes, which Exit waits for in its place.
+  private void ended(State s, Lane lane) {
+    changing = null;
+    applying = null;
+    cancelling = false;
+    s.closeSession(lane, connection(s), "the routine's session", part(routine), null);
+    s.closed();
+  }
+
+  /**
+   * Cancel while a change runs: the statement under way is cancelled, and the change says how it
+   * ended; once the routine it replaces was dropped, the change runs to its end.
+   */
   void cancel(State s) {
-    if (changing == null) {
+    if (changing == null || applying == null || cancelling) {
       return;
     }
-    changing.cancel();
-    changing = null;
-    if (session != null) {
-      closeSession(session);
+    if (applying.cancel()) {
+      cancelling = true;
+    } else {
+      say(s, "The routine was dropped already: its CREATE runs to its end");
     }
-    problem = new Problem(
-        ConsoleTab.UNSURE,
-        "The change was cancelled: if the server had already run it, it took effect. Refresh"
-            + " the routines in the tree to see.");
-    s.catalog.routinesChanged(s, id, container);
   }
 
   // The change, then the routines of the container, by which the routine saved is found: the one
   // that is new, as one whose name or arguments the text changed; else the one replaced.
-  private static Changed saved(Servers.Link link, Routines.Change change, Container container)
+  private static Changed saved(
+      Servers.Link link, Routines.Change change, Container container, Routines.Applying applying)
       throws Exception {
     var before = link.routines(container);
-    var outcome = link.define(change);
+    var outcome = link.define(container, change, applying);
     if (!(outcome instanceof Routines.Outcome.Done)) {
       return new Changed(outcome, null, null);
     }
@@ -384,7 +524,25 @@ final class RoutineTab implements Tab {
     }
   }
 
-  private void changed(State s, boolean drop, Routine replaced, String sent, Changed changed) {
+  // How a change ended, where the tab no longer shows it, as it closed or HooriDB closes: a
+  // failure goes to the notices, which keeps Exit open, and a change done to the status line.
+  private void untaken(State s, boolean drop, Routine replaced, Routines.Outcome outcome) {
+    var part = part(replaced);
+    switch (outcome) {
+      case Routines.Outcome.Done _ -> s.tell(part + (drop ? ": dropped" : ": saved"));
+      case Routines.Outcome.Refused(var why) -> s.notice(connection(s), part, why, true, null);
+      case Routines.Outcome.Failed f ->
+        s.notice(connection(s), part, failedText(drop, f), true, null);
+    }
+  }
+
+  private void changed(
+      State s,
+      boolean drop,
+      Routine replaced,
+      String sent,
+      Routines.Change change,
+      Changed changed) {
     var provider = provider(s);
     switch (changed.outcome()) {
       case Routines.Outcome.Done _
@@ -392,55 +550,122 @@ final class RoutineTab implements Tab {
         // The source stays, to create it again: Save does.
         routine = null;
         editing = true;
+        lost = false;
+        initial = source == null ? "" : source.statement();
         source = null;
         say(s, "Dropped " + replaced.label());
       }
       case Routines.Outcome.Done _ -> {
+        lost = false;
         if (changed.routine() != null) {
           routine = changed.routine();
           source = changed.source();
           editing = false;
-          show(source);
+          show(source.statement());
         } else if (replaced != null) {
           // The same routine, replaced: read what the server keeps of it.
           editing = false;
-          source = sent;
+          source = new Routine.Source(sent, source == null ? List.of() : source.session());
           read(s);
         }
         say(s, "Saved");
       }
       case Routines.Outcome.Refused(var why) -> problem = new Problem("Read-only", why);
-      case Routines.Outcome.Failed(var statement, var failure, var restored) -> {
-        var words = failure.message().isEmpty() ? failure.kind().name() : failure.message();
-        var back = restored
-            .map(well -> well
-                ? " The routine was dropped first, as the server cannot replace it in one step,"
-                    + " and was created again as it was."
-                : " The routine was dropped first, as the server cannot replace it in one step,"
-                    + " and could not be created again: its source is in the editor.")
-            .orElse("");
-        problem = new Problem(drop ? "Not dropped" : "Not saved", words + back);
-        if (!drop && provider != null && statement.equals(Routines.statement(sent, provider))) {
-          markError(provider, sent, failure, words);
+      case Routines.Outcome.Failed f -> {
+        problem = new Problem(
+            f.failure().kind() == Failure.Kind.CANCELLED
+                ? cancelledTitle(f)
+                : drop ? "Not dropped" : "Not saved",
+            failedText(drop, f));
+        if (!drop && provider != null) {
+          markError(provider, sent, change, f);
         }
-        if (restored.isPresent() && !restored.get()) {
+        if (f.put().orElse(null) instanceof Routines.PutBack.Not) {
+          // The routine is gone; its source stays, which Revert shows and Save creates again.
           routine = null;
-          source = null;
+          lost = true;
+          editing = true;
         }
       }
     }
     s.catalog.routinesChanged(s, id, container);
   }
 
-  // The place the server names in the CREATE statement, in the text it was sent from.
-  private void markError(Provider provider, String sent, Failure failure, String words) {
+  // A cancel before the routine was dropped left it as it was, as did one of the trial; of a
+  // statement that ran, the server alone knows whether it took effect.
+  private static String cancelledTitle(Routines.Outcome.Failed failed) {
+    return switch (failed.step().role()) {
+      case SESSION, TRIAL, TRIAL_DROP, DROP_FIRST -> "Cancelled";
+      case CREATE, DROP -> ConsoleTab.UNSURE;
+    };
+  }
+
+  /** What the failure of a change says, with how the routine was put back where it was dropped. */
+  static String failedText(boolean drop, Routines.Outcome.Failed failed) {
+    var failure = failed.failure();
+    var words = failure.message().isEmpty() ? said(failure.kind()) : failure.message();
+    var role = failed.step().role();
+    if (failure.kind() == Failure.Kind.CANCELLED) {
+      return switch (role) {
+        case SESSION, TRIAL, TRIAL_DROP, DROP_FIRST ->
+          "The change was cancelled before the routine was dropped: nothing of it changed.";
+        case CREATE, DROP ->
+          "The change was cancelled: if the server had already run it, it took effect. Refresh"
+              + " the routines in the tree to see.";
+      };
+    }
+    var dropped = " The routine was dropped first, as the server cannot replace it in one step,";
+    var put = failed
+        .put()
+        .map(p -> switch (p) {
+          case Routines.PutBack.AsItWas _ -> dropped + " and was created again as it was.";
+          case Routines.PutBack.WithoutDefiner(var refused) ->
+            dropped + " and was created again as it was, but with you as its definer: the server"
+                + " did not let you name the one it had (" + refused.message() + ").";
+          case Routines.PutBack.Not(var why) ->
+            dropped + " and could not be created again (" + why.message() + "). It is no longer"
+                + " on the server: Revert shows its source as it was read, and Save creates it"
+                + " from there.";
+        })
+        .orElse("");
+    return switch (role) {
+      case TRIAL ->
+        words + " Nothing was dropped: the server was given the text under a name of its own"
+            + " first, and did not take it.";
+      case TRIAL_DROP ->
+        "The text was created under a name of its own, to try it, and that could not be dropped"
+            + " again: " + words + " Nothing else was changed.";
+      case SESSION ->
+        "The session could not be set as the routine was created: " + words + " Nothing was"
+            + " changed.";
+      case DROP_FIRST -> words + " Nothing was changed.";
+      case CREATE, DROP -> words + put;
+    };
+  }
+
+  private static String said(Failure.Kind kind) {
+    return switch (kind) {
+      case CONNECTION_LOST -> "The connection was lost.";
+      case ACCESS_DENIED -> "The server refused it.";
+      default -> "It failed.";
+    };
+  }
+
+  // The place the server names in the CREATE statement, or in its trial, in the text it was sent
+  // from.
+  private void markError(
+      Provider provider, String sent, Routines.Change change, Routines.Outcome.Failed failed) {
+    var role = failed.step().role();
+    if (role != Routines.Role.CREATE && role != Routines.Role.TRIAL) {
+      return;
+    }
     var statements = Statements.split(sent, provider);
     if (statements.isEmpty()) {
       return;
     }
     int from = statements.getFirst().start();
-    var sql = Routines.statement(sent, provider);
-    failure.place(sql, provider).ifPresent(place -> {
+    var words = failed.failure().message();
+    Routines.place(change, failed, provider).ifPresent(place -> {
       var error = new CodeEditor.Diagnostic(
           from + place.start(), from + place.end(), CodeEditor.Severity.ERROR, words);
       editor.markup(ERROR_LAYER, sent, List.of(error));
@@ -464,11 +689,15 @@ final class RoutineTab implements Tab {
     clearError();
   }
 
-  private void closeSession(Lane lane) {
-    lane.close();
-    if (session == lane) {
-      session = null;
-    }
+  // The connection's name, as the notices name it.
+  private String connection(State s) {
+    var profile = s.profile(id);
+    return profile == null ? "A deleted connection" : State.name(profile);
+  }
+
+  // What the notices name the change by: its routine, or what a new one is.
+  private String part(Routine of) {
+    return of != null ? of.label() : name();
   }
 
   /** The tab says it in its status line for a while. */
@@ -516,7 +745,7 @@ final class RoutineTab implements Tab {
       actions.add(button(
               PRIMARY,
               "Save…",
-              changes && free ? () -> askSave(s) : null,
+              saves(s) ? () -> askSave(s) : null,
               Button.options()
                   .icon(Symbol.SAVE)
                   .state(changing != null ? Button.State.BUSY : Button.State.READY))
@@ -532,13 +761,17 @@ final class RoutineTab implements Tab {
               Button.options().icon(Symbol.EDIT))
           .key("edit"));
     }
-    boolean runs = routine != null && routine.kind() != Routine.Kind.AGGREGATE;
-    actions.add(button(
+    var uncalled = routine == null || provider == null
+        ? null
+        : provider.dialect().routines().uncalled(routine).orElse(null);
+    boolean runs = routine != null && uncalled == null;
+    El run = button(
             SECONDARY,
             "Run…",
             runs && s.catalog.connected(id) && changing == null ? () -> askRun(s) : null,
             Button.options().icon(Symbol.PLAY))
-        .key("run"));
+        .key("run");
+    actions.add(uncalled == null ? run : Tooltip.tooltip(run, uncalled));
     actions.add(button(
             SECONDARY,
             "Drop…",
@@ -583,6 +816,8 @@ final class RoutineTab implements Tab {
           })
           .key("source")
           .label("Source")
+          // Before the editor's own keys, as Control+S saves.
+          .onKeyFirst(key -> key(s, key))
           .wFull()
           .grow(1));
     }
@@ -592,12 +827,19 @@ final class RoutineTab implements Tab {
       end.add(Label.label(Label.Variant.MUTED, said).key("said"));
     }
     if (changing != null) {
+      // Not once the routine was dropped, as the change then runs to its end.
+      boolean stops = applying != null && !applying.firm();
       end.add(row()
           .gap(t.space().s())
           .align(Style.Align.CENTER)
           .key("changing")
           .child(Progress.spinner().label("Changing"))
-          .child(button(SECONDARY, CANCEL, () -> cancel(s)).key("cancel-change")));
+          .child(button(
+                  SECONDARY,
+                  CANCEL,
+                  stops && !cancelling ? () -> cancel(s) : null,
+                  Button.options().state(cancelling ? Button.State.BUSY : Button.State.READY))
+              .key("cancel-change")));
     }
     return content.child(Card.footer(status, end.toArray(El[]::new)).key("footer"));
   }
@@ -641,15 +883,23 @@ final class RoutineTab implements Tab {
               "Connect " + name + " in Workspace to read, save or run the routine.")
           .key("unconnected");
     }
+    if (routine != null && routine.kind() == Routine.Kind.AGGREGATE) {
+      return Callout.callout(
+              Callout.Kind.INFO,
+              "No source",
+              "PostgreSQL does not write the source of an aggregate, so it is not shown here."
+                  + " Drop… drops it.")
+          .key("aggregate");
+    }
     return null;
   }
 
   /** The question before Save or Drop, or the form of Run, over the tab's window; or null. */
-  El question(State s, App<State> app) {
+  El dialog(State s, App<State> app) {
     return switch (asked) {
       case null -> null;
       case Preview p -> preview(s, app, p);
-      case Form f -> form(s, f);
+      case Arguments f -> form(s, f);
     };
   }
 
@@ -665,21 +915,38 @@ final class RoutineTab implements Tab {
         CodeEditor.embedded(CodeEditor.codeEditor(app, statements, previewEditor, syntax, null)
             .key("preview-statements")
             .label("Statements"));
-    var count = p.change().statements().size();
+    var change = p.change();
     String summary;
     if (p.drop()) {
       summary = "Drop " + routine.label() + " from " + path() + "?";
-    } else if (count > 1) {
-      summary = "The server cannot replace a routine in one step, so it is dropped first. Should"
-          + " the CREATE fail, the routine is created again as it was.";
+    } else if (change.dropsFirst()) {
+      summary = "The server cannot replace a routine in one step. The text is created under a name"
+          + " of its own first and dropped again, to see that the server takes it; then "
+          + routine.label() + " is dropped and created from the text. Should the CREATE fail, the"
+          + " routine is created again as it was.";
     } else {
-      summary = count + " statement runs on a session of its own:";
+      int count = change.steps().size();
+      summary = (count == 1 ? "1 statement runs" : count + " statements run")
+          + " on a session of its own:";
+    }
+    if (!p.drop() && change.statement(Routines.Role.SESSION).isPresent()) {
+      summary += " The session is set first as the routine was created, as the server reads its"
+          + " body by those settings.";
     }
     El content = col()
         .w(2 * ConnectionDialog.width())
         .gap(t.space().m())
         .child(Label.label(summary).wrapText())
         .child(code.h(Math.clamp(lines + 1L, 4, 14) * t.size().control()).wFull());
+    if (change.dropsFirst()) {
+      // What the server takes with the DROP, which no statement here grants again.
+      content.child(Callout.callout(
+              Callout.Kind.WARNING,
+              "Privileges",
+              "The privileges granted on " + routine.label() + " alone go with its DROP and are"
+                  + " not granted again.")
+          .key("preview-grants"));
+    }
     El go = button(
             PRIMARY,
             p.drop() ? "Drop" : "Save",
@@ -695,8 +962,11 @@ final class RoutineTab implements Tab {
         .key("routine-preview");
   }
 
-  private El form(State s, Form f) {
+  // A row for each argument: its field, named by its name, mode and type, with its NULL beside it,
+  // and why it has no value once Run was pressed.
+  private El form(State s, Arguments f) {
     Theme t = Theme.CURRENT.get();
+    var provider = provider(s);
     var content = col().w(ConnectionDialog.width()).gap(t.space().m());
     if (f.arguments.isEmpty()) {
       content.child(Label.label(routine.label() + " takes no arguments.").wrapText());
@@ -704,25 +974,27 @@ final class RoutineTab implements Tab {
       content.child(Label.label("A value for each argument, which the server reads as its type:")
           .wrapText());
     }
+    var rows = new ArrayList<Form.Entry>();
     for (int i = 0; i < f.arguments.size(); i++) {
       var parameter = f.arguments.get(i);
       int at = i;
       var name = parameter.name().isEmpty() ? "$" + (i + 1) : parameter.name();
       var mode = parameter.mode() == Routine.Mode.IN ? "" : parameter.mode().name() + " ";
-      var label = name + " (" + mode + parameter.type() + ")";
       El field = TextField.textField(
               Prop.of(() -> f.values[at], v -> f.values[at] = v), f.nulls[at] ? "NULL" : "")
           .key("argument-" + i)
-          .label(label)
           .disabled(f.nulls[at])
-          .grow(1);
+          .wFull();
       El isNull = Checkbox.checkbox(Prop.of(() -> f.nulls[at], v -> f.nulls[at] = v), "NULL")
           .key("null-" + i)
           .label("NULL " + name);
-      content.child(col()
-          .gap(t.space().xs())
-          .child(Label.label(label))
-          .child(row().gap(t.space().s()).align(Style.Align.CENTER).child(field).child(isNull)));
+      var missing = f.tried && provider != null ? f.missing(i, provider) : null;
+      rows.add(Form.row(
+          Form.field(name + " (" + mode + parameter.type() + ")", field).grow().error(missing),
+          Form.field("", isNull)));
+    }
+    if (!rows.isEmpty()) {
+      content.child(Form.form(Form.Labels.ABOVE, rows.toArray(Form.Entry[]::new)));
     }
     content.child(Label.label(
             Label.Variant.MUTED,

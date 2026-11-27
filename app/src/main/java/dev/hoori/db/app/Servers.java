@@ -120,17 +120,20 @@ interface Servers {
       return List.of();
     }
 
-    /** The routine's CREATE statement, as {@link Catalog#source}. */
-    default String source(Routine routine) throws CatalogException {
+    /** The routine's source, as {@link Catalog#source}. */
+    default Routine.Source source(Routine routine) throws CatalogException {
       throw CatalogException.of(
           CatalogException.Failure.OTHER, "A server of documents has no routines");
     }
 
     /**
-     * Creates, replaces or drops a routine on this connection, as {@link Routines#apply}: a link
-     * of a read-only profile refuses it unsent.
+     * Creates, replaces or drops a routine of the container on this connection, as {@link
+     * Routines#apply}, which the applying given cancels: a link of a read-only profile refuses it
+     * unsent.
      */
-    default Routines.Outcome define(Routines.Change change) throws QueryException {
+    default Routines.Outcome define(
+        Container container, Routines.Change change, Routines.Applying applying)
+        throws QueryException {
       throw QueryException.of(
           QueryException.Failure.OTHER, "A server of documents has no routines");
     }
@@ -678,15 +681,17 @@ interface Servers {
     }
 
     @Override
-    public String source(Routine routine) throws CatalogException {
+    public Routine.Source source(Routine routine) throws CatalogException {
       readable();
       return Catalog.source(connection, provider, routine);
     }
 
     @Override
-    public Routines.Outcome define(Routines.Change change) throws QueryException {
+    public Routines.Outcome define(
+        Container container, Routines.Change change, Routines.Applying applying)
+        throws QueryException {
       usable();
-      var outcome = Routines.apply(connection, provider, change, readOnly);
+      var outcome = Routines.apply(connection, provider, change, readOnly, applying);
       if (outcome instanceof Routines.Outcome.Failed f
           && f.failure().kind() == Failure.Kind.CONNECTION_LOST) {
         gone.set(true);

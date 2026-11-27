@@ -377,7 +377,7 @@ final class ConnectionDialog {
     // The consoles ask first, before anything is written, so that Cancel leaves it all as it was;
     // then they start nothing until the save is done.
     if (ends(s, profile)
-        && (s.guard.asks(s, act, SAVED, s.guarded(id), () -> save(s))
+        && (s.guard.asks(s, act, SAVED, s.sessions(id), () -> save(s))
             || !s.guard.lock(s, act, State.name(profile) + " is being saved", Set.of(id)))) {
       return;
     }

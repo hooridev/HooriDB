@@ -22,6 +22,7 @@ import dev.hoori.db.core.catalog.Routine.Mode;
 import dev.hoori.db.core.catalog.Routine.Parameter;
 import dev.hoori.db.core.catalog.Schema;
 import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.log.Purpose;
 import java.nio.file.Path;
 import java.util.List;
@@ -176,34 +177,275 @@ class RoutineTabTest {
         app.state().statements.entries().toString());
   }
 
+  // MySQL's add(int, int), defined by another user, created under a sql_mode of its own.
+  private static final Routine MY_ADD = new Routine(
+      LEGACY_DB,
+      "add",
+      "",
+      Kind.FUNCTION,
+      "int",
+      List.of(new Parameter("a", "int", Mode.IN), new Parameter("b", "int", Mode.IN)));
+  private static final String MY_SOURCE =
+      "CREATE DEFINER=`app`@`%` FUNCTION `add`(a INT, b INT) RETURNS int\n"
+          + "    DETERMINISTIC\nRETURN a + b";
+  private static final String MY_MODE = "SET SESSION sql_mode = 'ANSI_QUOTES'";
+  private static final String MY_CHANGED = MY_SOURCE.replace("a + b", "a + b + 1");
+
+  /** MySQL's add(int, int) open in its tab, edited to MY_CHANGED, and Save… asked. */
+  private App<State> mySave() throws Exception {
+    c.servers.routine(MYSQL, MY_ADD, new Routine.Source(MY_SOURCE, List.of(MY_MODE)));
+    var app = routines(LEGACY.withName("legacy-prod"), "legacy");
+    c.run(
+        app,
+        "press role=treeitem label=\"add(int, int)\"\nkey Enter\n" + SETTLE
+            + "press role=button label=\"Edit\"\n" + OPENS + edit(MY_CHANGED)
+            + "press role=button label=\"Save…\"\n" + OPENS);
+    return app;
+  }
+
+  // Replaces the editor's text with the one given, in one edit.
+  private static String edit(String text) {
+    return "press #source\nkey A control\nclipboard \"" + escaped(text) + "\"\nkey V control\n"
+        + "frame\n";
+  }
+
   @Test
-  void whereTheServerCannotReplaceARoutineSaveDropsItFirst() throws Exception {
-    var add = new Routine(
-        LEGACY_DB,
-        "add",
-        "",
-        Kind.FUNCTION,
-        "int",
-        List.of(new Parameter("a", "int", Mode.IN), new Parameter("b", "int", Mode.IN)));
-    var source = "CREATE DEFINER=`app`@`%` FUNCTION `add`(a INT, b INT) RETURNS int\n"
-        + "    DETERMINISTIC\nRETURN a + b";
-    c.servers.routine(MYSQL, add, source);
+  void whereTheServerCannotReplaceARoutineSaveTriesTheTextBeforeItDropsIt() throws Exception {
+    var app = mySave();
+    c.run(app, "snap preview\n");
+    var preview = c.tree("preview");
+    assertTrue(preview.contains("role=dialog label=\"Save routine\""), preview);
+    // The tree cuts the statements short; the preview shows them all.
+    var tab = app.state().routines(null).getFirst();
+    var shown = ((RoutineTab.Preview) tab.asked).change().statements();
+    assertEquals(5, shown.size(), shown.toString());
+    assertEquals(MY_MODE, shown.getFirst());
+    assertTrue(shown.get(1).contains("hooridb_check_"), shown.toString());
+    assertEquals("DROP FUNCTION IF EXISTS legacy.`add`", shown.get(3));
+    assertTrue(ConsoleTest.near(preview, "#preview-grants").contains("Privileges"), preview);
+    c.run(app, "press role=button label=\"Save\"\n" + OPENS + SETTLE + "snap saved\n");
+    var defined = c.servers.calls.stream()
+        .filter(k -> k.startsWith("define "))
+        .map(k -> k.substring(("define " + MYSQL + " ").length()))
+        .toList();
+    assertEquals(5, defined.size(), defined.toString());
+    assertEquals(MY_MODE, defined.get(0));
+    assertTrue(
+        defined.get(1).startsWith("CREATE DEFINER=`app`@`%` FUNCTION hooridb_check_"),
+        defined.toString());
+    assertTrue(
+        defined.get(2).startsWith("DROP FUNCTION IF EXISTS legacy.hooridb_check_"),
+        defined.toString());
+    assertEquals("DROP FUNCTION IF EXISTS legacy.`add`", defined.get(3));
+    assertEquals(MY_CHANGED, defined.get(4));
+    assertTrue(c.tree("saved").contains("Saved"), c.tree("saved"));
+  }
+
+  @Test
+  void saveNeedsAnEditAndControlSAsksAsItsButtonDoes() throws Exception {
+    var app = shop();
+    c.run(
+        app,
+        "press role=treeitem label=\"add(integer, integer)\"\nkey Enter\n" + SETTLE
+            + "press role=button label=\"Edit\"\n" + OPENS
+            + "press #source\nkey S control\n" + OPENS + "snap unedited\n");
+    var unedited = c.tree("unedited");
+    assertTrue(line(unedited, "label=\"Save…\"").contains("disabled"), unedited);
+    assertFalse(unedited.contains("role=dialog"), unedited);
+    c.run(app, "press #source\ntype \" \"\nkey S control\n" + OPENS + "snap edited\n");
+    assertTrue(c.tree("edited").contains("role=dialog label=\"Save routine\""), c.tree("edited"));
+  }
+
+  @Test
+  void whereTheRoutineCannotBeCreatedAgainItsSourceStaysForRevertAndSave() throws Exception {
+    var refused = FakeServers.serverError(
+        Failure.Kind.ACCESS_DENIED, "Access denied; you need the SET_ANY_DEFINER privilege");
+    var withoutDefiner = MY_SOURCE.replace("DEFINER=`app`@`%` ", "");
+    c.servers
+        .definitionFails(
+            MYSQL, MY_CHANGED, FakeServers.serverError(Failure.Kind.OTHER, "Made to fail"))
+        .definitionFails(MYSQL, MY_SOURCE, refused)
+        .definitionFails(MYSQL, withoutDefiner, refused);
+    var app = mySave();
+    c.run(app, "press role=button label=\"Save\"\n" + OPENS + SETTLE + "snap lost\n");
+    var lost = c.tree("lost");
+    // The tree cuts the callout's text short.
+    var tab = app.state().routines(null).getFirst();
+    var said = tab.problem.text();
+    assertTrue(said.contains("could not be created again"), said);
+    assertTrue(said.contains("SET_ANY_DEFINER"), said);
+    assertTrue(said.contains("Revert shows its source"), said);
+    // Both ways of putting it back were tried.
+    assertTrue(c.servers.calls.contains("define " + MYSQL + " " + MY_SOURCE));
+    assertTrue(c.servers.calls.contains("define " + MYSQL + " " + withoutDefiner));
+    assertEquals(null, tab.routine);
+    assertTrue(lost.contains("1 routine has unsaved edits"), lost);
+    c.run(app, "press role=button label=\"Revert\"\n" + OPENS + "snap reverted\n");
+    assertEquals(MY_SOURCE, tab.text);
+    var reverted = c.tree("reverted");
+    assertFalse(line(reverted, "label=\"Save…\"").contains("disabled"), reverted);
+    // Its source is at stake: closing the tab asks.
+    c.run(app, "press #source\nkey W control\n" + OPENS + "snap close\n");
+    var close = c.tree("close");
+    assertTrue(close.contains("role=dialog label=\"Discard the edits?\""), close);
+    assertTrue(close.contains("no longer on the server"), close);
+  }
+
+  @Test
+  void cancelStopsOnlyUntilTheDropAndAClosedTabsOutcomeIsANoticeThatExitWaitsFor()
+      throws Exception {
+    var app = mySave();
+    var create = "define " + MYSQL + " " + MY_CHANGED;
+    var gate = c.servers.hold(create);
+    try {
+      c.run(app, "press role=button label=\"Save\"\n" + OPENS);
+      held(create);
+      // A press builds the view anew, which reads that the routine was dropped.
+      c.run(app, "press #source\nframe\nsnap held\n");
+      var held = c.tree("held");
+      assertTrue(line(held, "#cancel-change").contains("disabled"), held);
+      // The tab closes after its question, and the change goes on.
+      c.run(
+          app,
+          "press #source\nkey W control\n" + OPENS + "press role=button label=\"Discard\"\n"
+              + OPENS);
+      assertTrue(app.state().routines(null).isEmpty());
+      app.state().requestClose();
+      c.run(app, "frame\n");
+      assertFalse(app.windows().all().isEmpty(), "Exit waits for the change");
+      var failed = FakeServers.serverError(Failure.Kind.OTHER, "Made to fail");
+      c.servers
+          .definitionFails(MYSQL, MY_CHANGED, failed)
+          .definitionFails(MYSQL, MY_SOURCE, failed);
+    } finally {
+      gate.countDown();
+    }
+    c.run(app, SETTLE + SETTLE);
+    assertFalse(app.windows().all().isEmpty(), "a notice keeps Exit open");
+    assertEquals(1, app.state().notices.size(), app.state().notices.toString());
+    var notice = app.state().notices.getFirst();
+    assertTrue(notice.what().contains("could not be created again"), notice.toString());
+  }
+
+  @Test
+  void aCancelBeforeTheDropLeavesTheRoutineAsItWas() throws Exception {
+    var app = mySave();
+    var mode = "define " + MYSQL + " " + MY_MODE;
+    var gate = c.servers.hold(mode);
+    try {
+      c.run(app, "press role=button label=\"Save\"\n" + OPENS);
+      held(mode);
+      c.run(app, "frame\npress #cancel-change\nframe\n");
+    } finally {
+      gate.countDown();
+    }
+    c.run(app, SETTLE + "snap cancelled\n");
+    var cancelled = c.tree("cancelled");
+    assertTrue(cancelled.contains("nothing of it changed"), cancelled);
+    assertFalse(
+        c.servers.calls.contains("define " + MYSQL + " DROP FUNCTION IF EXISTS legacy.`add`"),
+        c.servers.calls.toString());
+    assertEquals(MY_ADD, app.state().routines(null).getFirst().routine);
+  }
+
+  @Test
+  void whereTheServerDropsFirstATextOfAnotherRoutineIsNotSaved() throws Exception {
+    c.servers.routine(MYSQL, MY_ADD, MY_SOURCE);
     var app = routines(LEGACY.withName("legacy-prod"), "legacy");
     c.run(
         app,
         "press role=treeitem label=\"add(int, int)\"\nkey Enter\n" + SETTLE
             + "press role=button label=\"Edit\"\n" + OPENS
-            + "press role=button label=\"Save…\"\n" + OPENS + "snap preview\n");
-    var preview = c.tree("preview");
-    assertTrue(preview.contains("DROP FUNCTION IF EXISTS legacy.`add`"), preview);
-    assertTrue(preview.contains("dropped first"), preview);
-    c.run(app, "press role=button label=\"Save\"\n" + OPENS + SETTLE + "snap saved\n");
-    var defined = c.servers.calls.stream().filter(k -> k.startsWith("define ")).toList();
-    assertEquals(
-        List.of(
-            "define " + MYSQL + " DROP FUNCTION IF EXISTS legacy.`add`",
-            "define " + MYSQL + " " + source),
-        defined);
+            + edit(MY_SOURCE.replace("`add`", "`plus`"))
+            + "press role=button label=\"Save…\"\n" + OPENS + "snap refused\n");
+    var refused = c.tree("refused");
+    assertFalse(refused.contains("role=dialog"), refused);
+    assertTrue(refused.contains("creates the function plus, not add(int, int)"), refused);
+    assertTrue(c.servers.calls.stream().noneMatch(k -> k.startsWith("define ")));
+  }
+
+  @Test
+  void anEditedTabAsksBeforeItClosesButNotBeforeItsConnectionDisconnects() throws Exception {
+    var app = shop();
+    c.run(
+        app,
+        "press role=treeitem label=\"add(integer, integer)\"\nkey Enter\n" + SETTLE
+            + "press role=button label=\"Edit\"\n" + OPENS + "press #source\ntype \" \"\n"
+            + "frame\nkey W control\n" + OPENS + "snap asked\n");
+    var asked = c.tree("asked");
+    assertTrue(asked.contains("role=dialog label=\"Discard the edits?\""), asked);
+    c.run(app, "press role=button label=\"Keep editing\"\n" + OPENS + "snap kept\n");
+    assertEquals(1, app.state().routines(null).size());
+    assertTrue(c.tree("kept").contains("1 routine has unsaved edits"), c.tree("kept"));
+    c.run(app, menu("shop-prod", "Disconnect") + SETTLE + "snap disconnected\n");
+    var disconnected = c.tree("disconnected");
+    assertFalse(disconnected.contains("Discard the edits?"), disconnected);
+    assertEquals(1, app.state().routines(null).size());
+    c.run(
+        app,
+        "press #source\nkey W control\n" + OPENS + "press role=button label=\"Discard\"\n" + OPENS);
+    assertTrue(app.state().routines(null).isEmpty());
+  }
+
+  @Test
+  void runAsksAValueOfEachArgumentWhoseTypeHasNoEmptyOne() throws Exception {
+    var app = shop();
+    c.run(
+        app,
+        menu("add(integer, integer)", "Run…") + SETTLE
+            + "press role=button label=\"Run\"\nframe\nsnap empty\n");
+    var empty = c.tree("empty");
+    assertTrue(empty.contains("role=dialog label=\"Run add(integer, integer)\""), empty);
+    assertTrue(empty.contains("Enter a value of integer, or check NULL."), empty);
+    assertTrue(app.state().consoles(null).isEmpty());
+  }
+
+  @Test
+  void aggregatesAndWindowFunctionsAreNotRunAndAnAggregateIsNotRead() throws Exception {
+    var sum = new Routine(
+        PUBLIC,
+        "total",
+        "integer",
+        Kind.AGGREGATE,
+        "bigint",
+        List.of(new Parameter("", "integer", Mode.IN)));
+    var rank = new Routine(PUBLIC, "ranked", "", Kind.WINDOW, "bigint", List.of());
+    var first = new Routine(
+        PUBLIC,
+        "first",
+        "a anyarray",
+        Kind.FUNCTION,
+        "anyelement",
+        List.of(new Parameter("a", "anyarray", Mode.IN)));
+    c.servers
+        .routine(PG, sum, "")
+        .routine(PG, rank, "CREATE OR REPLACE FUNCTION public.ranked() …")
+        .routine(PG, first, "CREATE OR REPLACE FUNCTION public.first(a anyarray) …");
+    var app = shop();
+    for (var label : List.of("total(integer)", "ranked()", "first(anyarray)")) {
+      c.run(
+          app,
+          "press role=treeitem label=\"" + label + "\" right\n" + OPENS + "snap menu\nkey Escape\n"
+              + OPENS);
+      var menu = c.tree("menu");
+      assertTrue(line(menu, "label=\"Run…\"").contains("disabled"), label + "\n" + menu);
+    }
+    c.run(
+        app,
+        "press role=treeitem label=\"total(integer)\"\nkey Enter\n" + SETTLE + "snap aggregate\n");
+    var aggregate = c.tree("aggregate");
+    assertTrue(aggregate.contains("does not write the source of an aggregate"), aggregate);
+    assertFalse(aggregate.contains("Source not read"), aggregate);
+    assertTrue(c.servers.calls.stream()
+        .noneMatch(k -> k.startsWith("source " + PG + "/shop.public total")));
+  }
+
+  // Waits until the fake took the call of the key, which then waits at its gate.
+  private void held(String key) throws InterruptedException {
+    for (int i = 0; i < 500 && !c.servers.calls.contains(key); i++) {
+      Thread.sleep(10);
+    }
+    assertTrue(c.servers.calls.contains(key), c.servers.calls.toString());
   }
 
   @Test

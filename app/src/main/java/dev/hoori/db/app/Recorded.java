@@ -219,13 +219,15 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
     }
 
     @Override
-    public String source(Routine routine) throws CatalogException {
+    public Routine.Source source(Routine routine) throws CatalogException {
       return recorded(of(routine.container()), () -> link.source(routine));
     }
 
     @Override
-    public Routines.Outcome define(Routines.Change change) throws QueryException {
-      return recorded(null, () -> link.define(change));
+    public Routines.Outcome define(
+        Container container, Routines.Change change, Routines.Applying applying)
+        throws QueryException {
+      return recorded(of(container), () -> link.define(container, change, applying));
     }
 
     @Override

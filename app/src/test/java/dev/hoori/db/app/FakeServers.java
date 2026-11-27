@@ -173,7 +173,7 @@ final class FakeServers implements Servers {
   private final java.util.Set<String> writing = ConcurrentHashMap.newKeySet();
   // The routines of a schema or database, by host and path, and the source of each.
   private final Map<String, List<Routine>> routines = new ConcurrentHashMap<>();
-  private final Map<Routine, String> sources = new ConcurrentHashMap<>();
+  private final Map<Routine, Routine.Source> sources = new ConcurrentHashMap<>();
   // What a statement of DDL does as it runs, or how it fails, by its key.
   private final Map<String, Runnable> effects = new ConcurrentHashMap<>();
   private final Map<String, Failure> definitionFailures = new ConcurrentHashMap<>();
@@ -183,6 +183,11 @@ final class FakeServers implements Servers {
    * already, with this CREATE statement as its source.
    */
   FakeServers routine(String host, Routine routine, String source) {
+    return routine(host, routine, Routine.Source.of(source));
+  }
+
+  /** As {@link #routine(String, Routine, String)}, with the settings it was created under. */
+  FakeServers routine(String host, Routine routine, Routine.Source source) {
     routines
         .computeIfAbsent(host + "/" + path(routine.container()), k -> new CopyOnWriteArrayList<>())
         .add(routine);
@@ -837,7 +842,7 @@ final class FakeServers implements Servers {
     }
 
     @Override
-    public String source(Routine r) throws CatalogException {
+    public Routine.Source source(Routine r) throws CatalogException {
       var key = "source " + host + "/" + FakeServers.path(r.container()) + " " + r.label();
       return read(key, r.container().database(), () -> {
             var text = sources.get(r);
@@ -849,30 +854,32 @@ final class FakeServers implements Servers {
           .getFirst();
     }
 
-    // Each statement keyed define <host> <sql>, through core's seam as core's are; a DROP of a
-    // routine it holds takes the routine out, and what defines says happens.
+    // Each statement keyed define <host> <sql>, through core's seam as core's are, in the order
+    // and with the cancel and the restore of core's Routines.apply; a DROP of a routine it holds
+    // takes the routine out, and what defines says happens.
     @Override
-    public Routines.Outcome define(Routines.Change change) throws QueryException {
+    public Routines.Outcome define(
+        Container c, Routines.Change change, Routines.Applying applying) {
       if (readOnly) {
         return new Routines.Outcome.Refused("The connection is read-only.");
       }
-      var statements = change.statements();
-      for (int i = 0; i < statements.size(); i++) {
-        var sql = statements.get(i);
-        var key = "define " + host + " " + sql;
-        var failure = Journal.sql(
-            made.provider(),
-            Purpose.DEFINITION,
-            sql,
-            f -> f.isPresent() ? new Outcome.Failed(f.get().message()) : Outcome.DONE,
-            () -> defined(key, sql));
-        if (failure.isPresent()) {
-          Optional<Boolean> restored =
-              i > 0 && change.restore() != null ? Optional.of(true) : Optional.empty();
-          return new Routines.Outcome.Failed(sql, failure.get(), restored);
-        }
-      }
-      return new Routines.Outcome.Done();
+      return Routines.apply(
+          sql -> {
+            var key = "define " + host + " " + sql;
+            try {
+              return Journal.sql(
+                  made.provider(),
+                  Purpose.DEFINITION,
+                  sql,
+                  f -> f.isPresent() ? new Outcome.Failed(f.get().message()) : Outcome.DONE,
+                  () -> defined(key, sql));
+            } catch (QueryException e) {
+              // As core's Execution gives a failure of the connection.
+              return Optional.of(serverError(Failure.Kind.CONNECTION_LOST, e.getMessage()));
+            }
+          },
+          change,
+          applying);
     }
 
     private Optional<Failure> defined(String key, String sql) throws QueryException {
@@ -894,8 +901,7 @@ final class FakeServers implements Servers {
       var dialect = made.provider().dialect().routines();
       for (var list : routines.values()) {
         for (var r : List.copyOf(list)) {
-          if (sql.equals(dialect.drop(r))
-              || !dialect.replaces() && sql.equals(dialect.dropFirst(r))) {
+          if (sql.equals(dialect.drop(r)) || dialect.dropFirst(r).orElse("").equals(sql)) {
             list.remove(r);
             sources.remove(r);
           }

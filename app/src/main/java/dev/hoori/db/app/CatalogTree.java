@@ -1186,7 +1186,7 @@ final class CatalogTree {
     var profile = s.profile(id);
     var name = profile == null ? "the connection" : State.name(profile);
     if (s.guard.asks(
-        s, act, name + " disconnects", s.guarded(id), () -> disconnect(s, act, id, then))) {
+        s, act, name + " disconnects", s.sessions(id), () -> disconnect(s, act, id, then))) {
       return;
     }
     var live = lives.get(id);
@@ -1418,6 +1418,7 @@ final class CatalogTree {
       case FUNCTION -> routine.returns();
       case PROCEDURE -> "procedure";
       case AGGREGATE -> routine.returns() + " · aggregate";
+      case WINDOW -> routine.returns() + " · window";
     };
   }
 
@@ -1680,17 +1681,16 @@ final class CatalogTree {
             refresh);
       }
       case Node.OfRoutine(var id, var routine) -> {
+        var profile = s.profile(id);
+        boolean called = profile != null
+            && profile.provider().dialect().routines().uncalled(routine).isEmpty();
         Menu.Item again = Menu.item(
                 "Refresh",
                 connected ? () -> refresh(s, new Node.OfRoutines(id, routine.container())) : null)
             .icon(Symbol.ARROW_CLOCKWISE);
         yield List.of(
             Menu.item("Open", () -> s.openRoutine(id, routine)).icon(Symbol.CODE),
-            Menu.item(
-                    "Run…",
-                    routine.kind() != Routine.Kind.AGGREGATE && connected
-                        ? () -> s.runRoutine(id, routine)
-                        : null)
+            Menu.item("Run…", called && connected ? () -> s.runRoutine(id, routine) : null)
                 .icon(Symbol.PLAY),
             Menu.separator(),
             Menu.item("Drop…", changesRoutines(s, id) ? () -> s.dropRoutine(id, routine) : null)

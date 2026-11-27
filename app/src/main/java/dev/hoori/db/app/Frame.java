@@ -215,7 +215,7 @@ final class Frame {
             new Tabs.Tab(
                 s.title(x),
                 true,
-                x.edited(),
+                x.atStake(Guard.Scope.BOTH),
                 x.routine != null && x.routine.kind() == Routine.Kind.PROCEDURE
                     ? Symbol.CODE
                     : Symbol.MATH_FORMULA,
@@ -334,7 +334,7 @@ final class Frame {
       return monitor.question(s);
     }
     if (group.activeTab() instanceof RoutineTab routine) {
-      return routine.question(s, app(s, group));
+      return routine.dialog(s, app(s, group));
     }
     if (group.activeTab() instanceof TableTab table) {
       El document = table.documentView(s, app(s, group));
@@ -658,24 +658,28 @@ final class Frame {
     }
     int consoles = 0;
     int tables = 0;
+    int routines = 0;
     boolean run = false;
     for (var tab : tabs) {
       switch (tab) {
         case ConsoleTab _ -> consoles++;
         case TableTab _ -> tables++;
+        case RoutineTab _ -> routines++;
         case FileRunDialog _ -> run = true;
       }
     }
     String text;
-    if (consoles + tables == 0) {
+    if (consoles + tables + routines == 0) {
       text = "A file that runs in one transaction holds uncommitted work";
-    } else if (tables == 0 && !run) {
+    } else if (tables + routines == 0 && !run) {
       text =
           consoles + (consoles == 1 ? " console may" : " consoles may") + " hold uncommitted work";
-    } else if (consoles == 0 && !run) {
+    } else if (consoles + routines == 0 && !run) {
       text = tables + (tables == 1 ? " table has" : " tables have") + " uncommitted changes";
+    } else if (consoles + tables == 0 && !run) {
+      text = routines + (routines == 1 ? " routine has" : " routines have") + " unsaved edits";
     } else {
-      int n = consoles + tables;
+      int n = consoles + tables + routines;
       text = n + (n == 1 ? " tab" : " tabs") + (run ? " and a file's run" : "")
           + " may hold uncommitted work";
     }
