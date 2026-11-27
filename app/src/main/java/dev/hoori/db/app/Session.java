@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.OptionalLong;
+import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
@@ -112,6 +113,40 @@ final class Session {
     for (var m : ended.messages()) {
       tell.tell(sql, Delivery.warned(m), false);
     }
+  }
+
+  /**
+   * Closes the lane of a session that runs nothing of the user's, as a search's or a server
+   * monitor's, as {@link Lane#close(java.util.function.Consumer)} does: what giving up its last
+   * call or closing it failed with, and the server's warnings, go to the app's notices under the
+   * connection's name, its password withheld, each begun with {@code how}. The app counts the
+   * session as closing until it has closed, which Exit waits for.
+   */
+  static void close(State s, Lane lane, UUID id, char[] password, String how) {
+    var profile = s.profile(id);
+    var tell = new Teller(
+        s.app,
+        s,
+        id,
+        profile == null ? "" : State.name(profile),
+        password == null ? null : password.clone(),
+        null);
+    s.closing();
+    var closing = lane.close(ended -> {
+      try {
+        told(ended, null, true, how, tell);
+      } finally {
+        tell.wipe();
+      }
+    });
+    s.app.background(
+        "close a session",
+        () -> {
+          closing.join();
+          return null;
+        },
+        _ -> s.closed(),
+        _ -> s.closed());
   }
 
   static final String ENDED = "Its end, as the console went on, failed: ";

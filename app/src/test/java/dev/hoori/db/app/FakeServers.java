@@ -310,6 +310,14 @@ final class FakeServers implements Servers {
     return this;
   }
 
+  private final Map<String, Failure> closingFails = new ConcurrentHashMap<>();
+
+  /** Closing a connection to the host fails so, as a server that does not answer the close may. */
+  FakeServers failsAtClose(String host, Failure failure) {
+    closingFails.put(host, failure);
+    return this;
+  }
+
   /** MariaDB's and MySQL's deadlock, which rolls the whole transaction back. */
   static Failure deadlock() {
     return new Failure(
@@ -2356,7 +2364,9 @@ final class FakeServers implements Servers {
     @Override
     public Abandoned close() {
       closed.add(host + (database == null ? "" : "/" + database));
-      return giveUp();
+      var left = giveUp();
+      var failure = closingFails.get(host);
+      return failure == null ? left : new Abandoned(Optional.of(failure), left.messages());
     }
 
     @Override

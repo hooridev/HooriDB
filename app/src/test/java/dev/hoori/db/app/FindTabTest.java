@@ -22,6 +22,7 @@ import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConsoleStore;
 import dev.hoori.db.core.connection.Workspace;
+import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.find.Found;
 import dev.hoori.db.core.query.QueryException;
 import java.nio.file.Path;
@@ -143,6 +144,24 @@ class FindTabTest {
     var tree = c.tree("table");
     assertTrue(line(tree, "role=treeitem label=\"team\"").contains("expanded"), tree);
     assertTrue(line(tree, "role=treeitem label=\"customers\"").contains("selected"), tree);
+  }
+
+  @Test
+  void aSessionWhoseCloseFailsSaysSoInTheNotices() throws Exception {
+    var app = find();
+    c.run(app, search("cust"));
+    c.servers.failsAtClose(
+        PG, FakeServers.serverError(Failure.Kind.CONNECTION_LOST, "no answer to the close"));
+    c.run(app, "key W control\nframe\nadvance 1\nframe\n" + SETTLE);
+    var said = app.state().notices.stream()
+        .filter(n -> n.what().startsWith(FindTab.CLOSE_FAILED))
+        .toList();
+    assertEquals(1, said.size(), app.state().notices.toString());
+    assertEquals("shop-prod", said.getFirst().connection());
+    assertTrue(said.getFirst().failure());
+    assertTrue(
+        said.getFirst().what().contains("no answer to the close"),
+        said.getFirst().what());
   }
 
   @Test

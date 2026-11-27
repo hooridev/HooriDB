@@ -429,6 +429,8 @@ final class FindTab implements Tab {
     });
   }
 
+  static final String CLOSE_FAILED = "Closing the search's session failed: ";
+
   /**
    * Its session ends, as its connection was disconnected or changed: what runs is given up and the
    * connection closed, which Exit waits for. What was found stays.
@@ -444,16 +446,7 @@ final class FindTab implements Tab {
 
   private void closeSession(State s) {
     if (lane != null) {
-      s.closing();
-      var closing = lane.close(_ -> {});
-      s.app.background(
-          "close the search's session",
-          () -> {
-            closing.join();
-            return null;
-          },
-          _ -> s.closed(),
-          _ -> s.closed());
+      Session.close(s, lane, id, password, CLOSE_FAILED);
       lane = null;
       Arrays.fill(password, '\0');
       password = null;
