@@ -10,6 +10,7 @@ import com.rethinkj.ui.kit.Theme;
 import com.rethinkj.ui.window.SystemAppearance;
 import com.rethinkj.ui.window.Window;
 import com.rethinkj.ui.window.Windows;
+import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
@@ -1043,6 +1044,7 @@ final class State {
     exitAt = noticed;
     consoles(null).forEach(ConsoleTab::end);
     monitors(null).forEach(m -> m.end(this));
+    dialogs.end(this, null);
     int at = ++exits;
     app.after(EXIT_SECONDS, () -> {
       if (exits == at && guard.quitting() && closing > waived) {
@@ -1218,6 +1220,95 @@ final class State {
   }
 
   /**
+   * Export data… of the container's tables, with the table checked alone where one is given;
+   * nothing while another dialog is open or the connection is not connected.
+   */
+  void openExport(UUID id, Container container, Table table) {
+    if (!dialogs.anyOpen() && catalog.connected(id)) {
+      dialogs.export = ExportDialog.open(this, id, container, table);
+    }
+  }
+
+  /** Import data… into the table, as {@link #openExport} opens its dialog. */
+  void openImport(UUID id, Table table) {
+    if (!dialogs.anyOpen() && catalog.connected(id)) {
+      dialogs.importing = ImportDialog.open(this, id, table);
+    }
+  }
+
+  /** What an import wrote into the table: its tabs that hold no edits read it anew. */
+  void imported(UUID id, Table table) {
+    for (var tab : tables(id)) {
+      if (tab.table.equals(table) && !tab.atStake()) {
+        tab.open(this, true);
+      }
+    }
+  }
+
+  /**
+   * The tables File, Export data… exports in the window: in the main one those of the node
+   * selected in the tree, a table's alone, else the active tab's table; null for none.
+   */
+  Runnable exportFor(TabGroups.Group<Tab> group) {
+    if (group == tabs.main().active()
+        && selected != null
+        && CatalogTree.files(this, selected.id())
+        && catalog.connected(selected.id())) {
+      var id = selected.id();
+      switch (selected) {
+        case Node.OfTable n -> {
+          return () -> openExport(id, n.table().container(), n.table());
+        }
+        case Node.OfColumn n -> {
+          return () -> openExport(id, n.column().table().container(), n.column().table());
+        }
+        case Node.OfSchema n -> {
+          return () -> openExport(id, n.schema(), null);
+        }
+        case Node.OfDatabase n
+        when !catalog.schemas(id) -> {
+          return () -> openExport(id, n.database(), null);
+        }
+        default -> {
+          // Another node exports the active tab's table, as below.
+        }
+      }
+    }
+    return group.activeTab() instanceof TableTab x
+            && CatalogTree.files(this, x.id)
+            && catalog.connected(x.id)
+        ? () -> openExport(x.id, x.table.container(), x.table)
+        : null;
+  }
+
+  /** The table File, Import data… imports into, found as {@link #exportFor} finds it; or null. */
+  Runnable importFor(TabGroups.Group<Tab> group) {
+    Table table = null;
+    UUID id = null;
+    if (group == tabs.main().active() && selected != null) {
+      id = selected.id();
+      table = switch (selected) {
+        case Node.OfTable n -> n.table();
+        case Node.OfColumn n -> n.column().table();
+        default -> null;
+      };
+    }
+    if (table == null && group.activeTab() instanceof TableTab x) {
+      id = x.id;
+      table = x.table;
+    }
+    if (table == null
+        || table.kind() != Table.Kind.TABLE
+        || !CatalogTree.files(this, id)
+        || !catalog.connected(id)) {
+      return null;
+    }
+    var into = table;
+    var of = id;
+    return () -> openImport(of, into);
+  }
+
+  /**
    * Opens the server monitor of the connection in the window of these tabs, or goes to the one it
    * has, in whichever window.
    */
@@ -1370,6 +1461,7 @@ final class State {
   void ended(UUID id) {
     tables(id).forEach(TableTab::stop);
     monitors(id).forEach(m -> m.end(this));
+    dialogs.end(this, id);
   }
 
   /** The connection could not be connected: its consoles that waited for it say so. */
@@ -1635,6 +1727,7 @@ final class State {
     tables(null).forEach(TableTab::close);
     consoles(null).forEach(ConsoleTab::close);
     monitors(null).forEach(MonitorTab::close);
+    dialogs.end(this, null);
     catalog.closeAll(); // nothing waits for a server
     for (Windows.Handle window : app.windows().all()) {
       window.close();

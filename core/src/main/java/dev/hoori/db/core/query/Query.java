@@ -123,6 +123,35 @@ public final class Query {
   }
 
   /**
+   * Runs the text as a query of a plain statement, as {@link #query} does, with rows that the
+   * driver reads {@code fetchSize} at a time, or streams, as the session dialect's {@link
+   * dev.hoori.db.core.dialect.SessionDialect#fetchSize} gives it; a cancel reaches the statement
+   * also while its rows arrive, as the session dialect cancels it. Where the server sends rows in
+   * portions only within a transaction, the caller has one open.
+   */
+  public static <T> T stream(
+      Connection connection, Provider provider, String sql, int fetchSize, Result<T> result)
+      throws QueryException {
+    var session = provider.dialect().session();
+    var handle = new Handle(statement -> session.cancel(connection, statement));
+    return run(
+        connection,
+        provider,
+        handle::cancel,
+        () -> {
+          try (var statement = connection.createStatement();
+              var _ = handle.start(statement)) {
+            statement.setEscapeProcessing(false);
+            statement.setFetchSize(fetchSize);
+            try (var rows = statement.executeQuery(sql)) {
+              return result.read(rows);
+            }
+          }
+        },
+        value -> false);
+  }
+
+  /**
    * Runs a step that nothing can stop on the server, such as a switch of the connection's
    * database. An interrupt waits {@link #GRACE} for it to end, which leaves the connection usable,
    * and gives the connection up after that; either way the caller cannot know whether the step
@@ -395,9 +424,23 @@ public final class Query {
   // KILL QUERY.
   private static final class Handle {
 
+    // What stops the statement on the server.
+    interface Stopping {
+      void stop(Statement statement) throws SQLException;
+    }
+
     private final ReentrantLock lock = new ReentrantLock();
+    private final Stopping stopping;
     private Statement statement;
     private boolean cancelled;
+
+    Handle() {
+      this(Statement::cancel);
+    }
+
+    Handle(Stopping stopping) {
+      this.stopping = stopping;
+    }
 
     // What ends the statement's run: it waits for a cancel under way, unless the worker is
     // interrupted, which only happens to a connection given up.
@@ -439,7 +482,7 @@ public final class Query {
         if (statement == null) {
           return false;
         }
-        statement.cancel();
+        stopping.stop(statement);
         return true;
       } finally {
         lock.unlock();

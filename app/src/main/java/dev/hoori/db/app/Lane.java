@@ -168,6 +168,66 @@ final class Lane {
         this, (Task<?>) task, app.background(name, () -> await(task), onResult, onFailure));
   }
 
+  /**
+   * Asks for the call as {@link #ask} does, as one that can be stopped and answers all the same,
+   * as a write whose outcome must be told: {@link Stoppable#stop} interrupts the lane's thread in
+   * the call, which core turns into a cancel on the server, and what the call came to arrives as
+   * any answer. A call stopped before it began begins interrupted.
+   */
+  <T> Stoppable askStoppable(
+      App<?> app,
+      String name,
+      Priority priority,
+      Call<T> call,
+      Consumer<? super T> onResult,
+      Consumer<? super Exception> onFailure) {
+    var stoppable = new Stoppable();
+    ask(app, name, priority, on -> stoppable.run(call, on), onResult, onFailure);
+    return stoppable;
+  }
+
+  /** A call asked for by {@link #askStoppable}, which can be stopped as it runs. */
+  static final class Stoppable {
+    private Thread running; // the lane's thread, while it is in the call
+    private boolean stopped;
+
+    /** Stops the call where it runs, or as it begins. */
+    synchronized void stop() {
+      stopped = true;
+      if (running != null) {
+        running.interrupt();
+      }
+    }
+
+    synchronized boolean stopped() {
+      return stopped;
+    }
+
+    private <T> T run(Call<T> call, Servers.Link link) throws Exception {
+      begin();
+      try {
+        return call.call(link);
+      } finally {
+        end();
+      }
+    }
+
+    private synchronized void begin() {
+      running = Thread.currentThread();
+      if (stopped) {
+        running.interrupt();
+      }
+    }
+
+    // No interrupt of the stop reaches the lane's next call.
+    private synchronized void end() {
+      running = null;
+      if (stopped) {
+        Thread.interrupted();
+      }
+    }
+  }
+
   /** A call asked for on a lane, and the work that waits for its answer. */
   static final class Asked {
     private final Lane lane;

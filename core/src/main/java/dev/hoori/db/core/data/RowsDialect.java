@@ -3,14 +3,18 @@ package dev.hoori.db.core.data;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.Table;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.QueryException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.time.OffsetDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.function.Function;
 
 /**
@@ -31,11 +35,12 @@ public abstract class RowsDialect {
   abstract String count();
 
   /**
-   * How the table's columns are read. Where the server is asked for them before the page, a read
-   * fails as {@link QueryException.Failure#COLUMNS_CHANGED} where they are not the given ones.
+   * How the table's columns are read: whole, as an export reads them, or cut as a page holds them.
+   * Where the server is asked for them before the page, a read fails as {@link
+   * QueryException.Failure#COLUMNS_CHANGED} where they are not the given ones.
    */
   abstract Rows.Described describe(
-      Connection connection, Provider provider, Table table, List<Column> columns)
+      Connection connection, Provider provider, Table table, List<Column> columns, boolean whole)
       throws QueryException;
 
   /**
@@ -193,4 +198,23 @@ public abstract class RowsDialect {
   abstract boolean changeable(
       Connection connection, Provider provider, Table table, List<Object> values)
       throws QueryException;
+
+  /**
+   * The moments among those given that the server would store as other moments, where a moment
+   * goes in through the session's time, as in an hour that its zone shows twice: none where it
+   * goes in as itself.
+   */
+  abstract Set<OffsetDateTime> shifted(
+      Connection connection, Provider provider, Purpose purpose, Collection<OffsetDateTime> moments)
+      throws QueryException;
+
+  /** The most values that one statement binds as parameters, as the server and its driver take. */
+  abstract int parameters();
+
+  /**
+   * Whether a rollback takes back what was written into the table: not where its storage keeps no
+   * transactions, as MyISAM's does not.
+   */
+  abstract boolean transactional(
+      Connection connection, Provider provider, Table table, Purpose purpose) throws QueryException;
 }

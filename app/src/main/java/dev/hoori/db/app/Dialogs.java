@@ -14,6 +14,8 @@ final class Dialogs {
   ConnectionProfile deleting; // the connection the delete dialog asks about, or null
   FolderDialog folderDialog; // a folder's name or the question before its delete; null while closed
   QueryDialog queryDialog; // a query's name, save or delete dialog; null while closed
+  ExportDialog export; // Export data…, null while closed
+  ImportDialog importing; // Import data…, null while closed
   UUID placing; // the folder the new connection's dialog puts it in, or null for the top
   boolean about; // whether the About dialog is open
   // The modeless settings window, null while closed; not a modal dialog, so anyOpen() skips it.
@@ -26,6 +28,18 @@ final class Dialogs {
         || folderDialog != null
         || queryDialog != null
         || about
-        || driverList != null;
+        || driverList != null
+        || export != null
+        || importing != null;
+  }
+
+  /** Ends the sessions of the dialogs that have one, of the connection or of all where null. */
+  void end(State s, UUID id) {
+    if (export != null && (id == null || export.id.equals(id))) {
+      export.end(s);
+    }
+    if (importing != null && (id == null || importing.id.equals(id))) {
+      importing.end(s);
+    }
   }
 }

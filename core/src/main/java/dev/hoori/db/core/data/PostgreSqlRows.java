@@ -23,8 +23,10 @@ import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Types;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
@@ -32,10 +34,13 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.function.Function;
 
 /** How PostgreSQL's tables and results are read, with pgjdbc. */
 public final class PostgreSqlRows extends RowsDialect {
+
+  private static final String NUM_NULLS = "pg_catalog.num_nulls(";
 
   // PostgreSQL's built-in types, by the OIDs it gives them for good; a user's type may have any of
   // their names.
@@ -87,7 +92,7 @@ public final class PostgreSqlRows extends RowsDialect {
   // the base type of a domain.
   @Override
   Rows.Described describe(
-      Connection connection, Provider provider, Table table, List<Column> columns)
+      Connection connection, Provider provider, Table table, List<Column> columns, boolean whole)
       throws QueryException {
     // All the table's columns, so that the given ones can be told to be them still.
     var sql = "SELECT " + ALIAS + ".* FROM " + Rows.qualified(provider, table) + " AS " + ALIAS
@@ -112,7 +117,7 @@ public final class PostgreSqlRows extends RowsDialect {
           }
           var reads = new ArrayList<Rows.Read>();
           for (var i = 0; i < columns.size(); i++) {
-            reads.add(read(Rows.source(provider, columns.get(i)), metadata, i + 1));
+            reads.add(read(Rows.source(provider, columns.get(i), whole), metadata, i + 1));
           }
           return new Rows.Described(
               reads, Integer.toUnsignedLong(field(metadata, 1, "getTableOid")));
@@ -398,7 +403,7 @@ public final class PostgreSqlRows extends RowsDialect {
   // num_nulls(), as IS NULL holds for a composite whose fields are all NULL and concat() gives ''.
   @Override
   String unchanged(String column, Object value, Function<Object, String> parameter) {
-    var nulls = "pg_catalog.num_nulls(" + column + ") " + keyEquality();
+    var nulls = NUM_NULLS + column + ") " + keyEquality();
     if (value == null) {
       return nulls + " 1";
     }
@@ -407,6 +412,29 @@ public final class PostgreSqlRows extends RowsDialect {
           + keyEquality() + " " + parameter.apply(value);
     }
     return column + " " + keyEquality() + " " + parameter.apply(value);
+  }
+
+  // The protocol counts a statement's parameters in 16 bits, which pgjdbc before 42.4 and older
+  // servers take as signed.
+  @Override
+  int parameters() {
+    return Short.MAX_VALUE;
+  }
+
+  // A moment is bound with its offset, as itself.
+  @Override
+  Set<OffsetDateTime> shifted(
+      Connection connection,
+      Provider provider,
+      Purpose purpose,
+      Collection<OffsetDateTime> moments) {
+    return Set.of();
+  }
+
+  // Every table keeps transactions, an unlogged one too.
+  @Override
+  boolean transactional(Connection connection, Provider provider, Table table, Purpose purpose) {
+    return true;
   }
 
   // An UPDATE or DELETE of a table that others inherit from meets their rows too, whose keys may
@@ -437,13 +465,20 @@ public final class PostgreSqlRows extends RowsDialect {
       return Rows.whole(source, kind);
     }
     var text = "pg_catalog.concat(" + source.sql() + ")";
+    if (source.whole()) {
+      return new Rows.Read(
+          Rows.field(source, kind),
+          source.sql(),
+          List.of(text, NUM_NULLS + source.sql() + ")"),
+          (rows, index) -> rows.getInt(index + 1) == 1 ? null : rows.getString(index));
+    }
     return new Rows.Read(
         Rows.field(source, kind),
         source.sql(),
         List.of(
             "pg_catalog.substr(" + text + ", 1, " + (LIMIT + 1) + ")",
             "pg_catalog.octet_length(" + text + ")",
-            "pg_catalog.num_nulls(" + source.sql() + ")"),
+            NUM_NULLS + source.sql() + ")"),
         (rows, index) ->
             rows.getInt(index + 2) == 1 ? null : Rows.cut(rows.getString(index), rows, index + 1));
   }

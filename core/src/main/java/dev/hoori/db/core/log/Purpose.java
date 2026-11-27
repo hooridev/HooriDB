@@ -21,5 +21,12 @@ public enum Purpose {
   /** The database the session is on. */
   SESSION,
   /** The server monitor's cancel of a statement and end of a session. */
-  MONITOR
+  MONITOR,
+  /** Reading the rows of tables whole, as an export to files reads them. */
+  EXPORT,
+  /**
+   * Writing the rows of a file into a table: emptying it first, the inserts, and the savepoints
+   * around them. A failure's message is not recorded, as it may quote a row of the file.
+   */
+  IMPORT
 }
