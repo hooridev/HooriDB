@@ -303,6 +303,64 @@ class TableFilesServerTest {
     }
   }
 
+  // 02:30 in Berlin comes twice as the clocks go back, which MySQL takes for one of its moments,
+  // while MariaDB keeps a timestamp as the moment it is.
+  @ParameterizedTest
+  @MethodSource("dev.hoori.db.core.TestServer#sql")
+  void failsARowWhoseMomentTheSessionWouldStoreAsAnother(Provider provider) throws Exception {
+    assumeTrue(provider != Provider.POSTGRESQL, "PostgreSQL takes a moment with its offset");
+    var name = unique("files_fold");
+    try (var connection = open(provider)) {
+      try {
+        execute(connection, "SET SESSION time_zone = 'Europe/Berlin'");
+      } catch (SQLException _) {
+        assumeTrue(false, "The server has no named time zones");
+      }
+      execute(
+          connection,
+          "CREATE TABLE " + qualified(provider, name)
+              + " (id integer PRIMARY KEY, t timestamp NULL)");
+      try {
+        var table = table(provider, name);
+        var columns = Catalog.columns(connection, provider, table);
+        var file = dir.resolve(name + ".csv");
+        Files.writeString(
+            file,
+            "id,t\n1,2024-10-27T00:30:00Z\n2,2024-10-27T01:30:00Z\n3,2024-01-01T12:00:00+01:00\n");
+        var report = load(
+            connection,
+            provider,
+            table,
+            columns,
+            file,
+            new Inserts.Options(false, 10, Inserts.Commit.ONCE, Inserts.OnError.SKIP));
+        var fold = OffsetDateTime.of(2024, 10, 27, 0, 30, 0, 0, ZoneOffset.UTC);
+        var expected = List.of(
+            List.<Object>of(1L, fold),
+            List.<Object>of(2L, fold.plusHours(1)),
+            List.<Object>of(3L, OffsetDateTime.of(2024, 1, 1, 11, 0, 0, 0, ZoneOffset.UTC)));
+        var stored = sorted(read(connection, provider, table, columns));
+        if (provider == Provider.MYSQL) {
+          assertFalse(report.failed().isEmpty(), report.toString());
+          assertTrue(
+              report.failed().stream().allMatch(f -> f.line() == 2 || f.line() == 3),
+              report.toString());
+          assertTrue(
+              report.failed().getFirst().message().contains("another moment"), report.toString());
+          // What went in is the moment of its line.
+          assertTrue(expected.containsAll(stored), stored.toString());
+          assertTrue(stored.contains(expected.get(2)), stored.toString());
+        } else {
+          assertEquals(List.of(), report.failed());
+          assertEquals(expected, stored);
+        }
+        assertLeftAsItWas(connection, provider);
+      } finally {
+        dropAfter(provider, "DROP TABLE " + qualified(provider, name));
+      }
+    }
+  }
+
   // Where the rows come in a transaction of the export's own, the columns are described in it, so
   // that no change of theirs comes between.
   @ParameterizedTest

@@ -9,9 +9,12 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.time.OffsetDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.function.Function;
 
 /**
@@ -194,6 +197,15 @@ public abstract class RowsDialect {
    */
   abstract boolean changeable(
       Connection connection, Provider provider, Table table, List<Object> values)
+      throws QueryException;
+
+  /**
+   * The moments among those given that the server would store as other moments, where a moment
+   * goes in through the session's time, as in an hour that its zone shows twice: none where it
+   * goes in as itself.
+   */
+  abstract Set<OffsetDateTime> shifted(
+      Connection connection, Provider provider, Purpose purpose, Collection<OffsetDateTime> moments)
       throws QueryException;
 
   /** The most values that one statement binds as parameters, as the server and its driver take. */

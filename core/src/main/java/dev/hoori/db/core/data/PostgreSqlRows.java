@@ -23,8 +23,10 @@ import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Types;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
@@ -32,6 +34,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.function.Function;
 
 /** How PostgreSQL's tables and results are read, with pgjdbc. */
@@ -414,6 +417,16 @@ public final class PostgreSqlRows extends RowsDialect {
   @Override
   int parameters() {
     return Short.MAX_VALUE;
+  }
+
+  // A moment is bound with its offset, as itself.
+  @Override
+  Set<OffsetDateTime> shifted(
+      Connection connection,
+      Provider provider,
+      Purpose purpose,
+      Collection<OffsetDateTime> moments) {
+    return Set.of();
   }
 
   // Every table keeps transactions, an unlogged one too.

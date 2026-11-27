@@ -23,8 +23,11 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -35,6 +38,9 @@ import java.util.function.UnaryOperator;
 
 /** How MariaDB's and MySQL's tables and results are read alike; their drivers differ. */
 abstract class MySqlFamilyRows extends RowsDialect {
+
+  // The most moments that one statement of shifted() asks about.
+  private static final int ASKED = 1000;
 
   /** The {@code EXPLAIN} whose result has a column {@code rows}. */
   abstract String tabularExplain();
@@ -460,6 +466,44 @@ abstract class MySqlFamilyRows extends RowsDialect {
       }
     }
     return transactional(connection, provider, table, Purpose.CHANGES);
+  }
+
+  // A moment goes in as FROM_UNIXTIME() of its seconds, as parameter() says: those whose whole
+  // seconds do not come back as themselves from the session's time, or not at all where they are
+  // out of its range, a statement for each thousand.
+  @Override
+  Set<OffsetDateTime> shifted(
+      Connection connection, Provider provider, Purpose purpose, Collection<OffsetDateTime> moments)
+      throws QueryException {
+    var distinct = List.copyOf(new LinkedHashSet<>(moments));
+    var shifted = new HashSet<OffsetDateTime>();
+    for (var from = 0; from < distinct.size(); from += ASKED) {
+      var asked = distinct.subList(from, Math.min(distinct.size(), from + ASKED));
+      var sql = "SELECT "
+          + String.join(
+              ", ", Collections.nCopies(asked.size(), "UNIX_TIMESTAMP(FROM_UNIXTIME(?))"));
+      Journal.sql(
+          provider,
+          purpose,
+          sql,
+          s -> Outcome.rows(1),
+          () -> Query.run(connection, provider, sql, statement -> {
+            for (var i = 0; i < asked.size(); i++) {
+              statement.setLong(i + 1, asked.get(i).toEpochSecond());
+            }
+            try (var rows = statement.executeQuery()) {
+              rows.next();
+              for (var i = 0; i < asked.size(); i++) {
+                var back = rows.getLong(i + 1);
+                if (rows.wasNull() || back != asked.get(i).toEpochSecond()) {
+                  shifted.add(asked.get(i));
+                }
+              }
+            }
+            return null;
+          }));
+    }
+    return shifted;
   }
 
   // The most placeholders of a prepared statement, which the server counts in 16 bits.

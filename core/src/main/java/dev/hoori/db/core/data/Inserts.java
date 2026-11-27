@@ -18,12 +18,15 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.ResolverStyle;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 import java.util.StringJoiner;
 
 /**
@@ -37,10 +40,11 @@ import java.util.StringJoiner;
  *
  * <p>A batch that fails is taken back to the savepoint before it and written again row by row,
  * each within a savepoint of its own, which tells the row that fails: that row is skipped, or the
- * import stops there, as the options say. A failure of the table rather than of a row, a lost
- * connection, a refused access, or a table that is gone, stops it at once. So a table whose
- * storage keeps no transactions, as MyISAM's, which would keep what a rollback is to take back,
- * takes no import.
+ * import stops there, as the options say. A row with a moment that the server would store as
+ * another, as one in an hour that the session's time zone shows twice, fails so too, unsent. A
+ * failure of the table rather than of a row, a lost connection, a refused access, or a table that
+ * is gone, stops it at once. So a table whose storage keeps no transactions, as MyISAM's, which
+ * would keep what a rollback is to take back, takes no import.
  */
 public final class Inserts {
 
@@ -267,6 +271,9 @@ public final class Inserts {
     }
   }
 
+  // A row of the source by its line, with its values as they are bound.
+  private record Bound(long line, List<Object> values) {}
+
   // One import as it goes: its counts and failures, on the calling thread.
   private static final class Writing {
 
@@ -347,22 +354,14 @@ public final class Inserts {
     }
 
     // Writes the batch, and in a transaction of each batch commits it where asked: the row it
-    // stopped at, or null.
+    // stopped at, or null. Rows with a moment that the server would store as another go one by
+    // one, which fails them.
     private Failed batch(List<Row.Values> batch, boolean commit) throws QueryException {
-      var savepoint = Transactions.savepoint(connection, provider, Purpose.IMPORT);
-      try {
-        insert(batch);
-        Transactions.release(connection, provider, Purpose.IMPORT, savepoint);
-        written += batch.size();
-      } catch (QueryException e) {
-        if (ofTable(e)) {
-          throw e;
-        }
-        Transactions.rollBack(connection, provider, Purpose.IMPORT, savepoint);
-        var stopped = oneByOne(batch);
-        if (stopped != null) {
-          return stopped;
-        }
+      var bound = batch.stream().map(row -> new Bound(row.line(), values(row))).toList();
+      var shifted = shifted(bound);
+      var stopped = shifted.isEmpty() ? whole(bound) : oneByOne(bound, shifted);
+      if (stopped != null) {
+        return stopped;
       }
       if (commit && options.commit() == Commit.EACH_BATCH) {
         Transactions.commit(connection, provider);
@@ -372,40 +371,97 @@ public final class Inserts {
       return null;
     }
 
-    // Writes the rows one at a time, each within a savepoint: the row it stopped at, or null.
-    private Failed oneByOne(List<Row.Values> batch) throws QueryException {
-      for (var row : batch) {
-        var savepoint = Transactions.savepoint(connection, provider, Purpose.IMPORT);
-        try {
-          insert(List.of(row));
-          Transactions.release(connection, provider, Purpose.IMPORT, savepoint);
-          written++;
-        } catch (QueryException e) {
-          if (ofTable(e)) {
-            throw e;
-          }
-          Transactions.rollBack(connection, provider, Purpose.IMPORT, savepoint);
-          var failure = new Failed(row.line(), e.detail().isEmpty() ? e.getMessage() : e.detail());
-          if (options.onError() == OnError.STOP) {
-            return failure;
-          }
-          fail(failure);
+    // Writes the rows in one statement, or one at a time where it fails: the row it stopped at, or
+    // null.
+    private Failed whole(List<Bound> rows) throws QueryException {
+      var savepoint = Transactions.savepoint(connection, provider, Purpose.IMPORT);
+      try {
+        insert(rows);
+        Transactions.release(connection, provider, Purpose.IMPORT, savepoint);
+        written += rows.size();
+        return null;
+      } catch (QueryException e) {
+        if (ofTable(e)) {
+          throw e;
         }
+        Transactions.rollBack(connection, provider, Purpose.IMPORT, savepoint);
+        return oneByOne(rows, Set.of());
+      }
+    }
+
+    // Writes the rows one at a time, each within a savepoint, but those with a shifted moment: the
+    // row it stopped at, or null.
+    private Failed oneByOne(List<Bound> rows, Set<OffsetDateTime> shifted) throws QueryException {
+      for (var row : rows) {
+        var moment = row.values().stream()
+            .filter(v -> v instanceof OffsetDateTime && shifted.contains(v))
+            .findFirst();
+        Failed failure;
+        if (moment.isPresent()) {
+          failure = new Failed(
+              row.line(),
+              "The server would store another moment than " + moment.get()
+                  + ": the session's time zone shows its time twice, or it is out of range");
+        } else {
+          var savepoint = Transactions.savepoint(connection, provider, Purpose.IMPORT);
+          try {
+            insert(List.of(row));
+            Transactions.release(connection, provider, Purpose.IMPORT, savepoint);
+            written++;
+            continue;
+          } catch (QueryException e) {
+            if (ofTable(e)) {
+              throw e;
+            }
+            Transactions.rollBack(connection, provider, Purpose.IMPORT, savepoint);
+            failure = new Failed(row.line(), e.detail().isEmpty() ? e.getMessage() : e.detail());
+          }
+        }
+        if (options.onError() == OnError.STOP) {
+          return failure;
+        }
+        fail(failure);
       }
       return null;
     }
 
-    private void insert(List<Row.Values> rows) throws QueryException {
+    // The values of the row as they are bound, as its columns' kinds read them.
+    private List<Object> values(Row.Values row) {
+      var texts = row.values();
+      var values = new Object[texts.size()];
+      for (var i = 0; i < values.length; i++) {
+        values[i] = value(kinds.get(i), texts.get(i));
+      }
+      return Arrays.asList(values);
+    }
+
+    // The moments of the rows that the server would store as others, which it is asked about only
+    // where moments go in through the session's time.
+    private Set<OffsetDateTime> shifted(List<Bound> rows) throws QueryException {
+      if (!kinds.contains(Kind.DATE_TIME_ZONED)) {
+        return Set.of();
+      }
+      var moments = new LinkedHashSet<OffsetDateTime>();
+      for (var row : rows) {
+        for (var value : row.values()) {
+          if (value instanceof OffsetDateTime moment) {
+            moments.add(moment);
+          }
+        }
+      }
+      return moments.isEmpty()
+          ? Set.of()
+          : provider.dialect().rows().shifted(connection, provider, Purpose.IMPORT, moments);
+    }
+
+    private void insert(List<Bound> rows) throws QueryException {
       var dialect = provider.dialect().rows();
       var values = new ArrayList<Object>();
       var parameter = Changes.parameters(dialect, values);
       var sql = new StringBuilder(insert);
       for (var r = 0; r < rows.size(); r++) {
         var row = new StringJoiner(", ", r == 0 ? "(" : ", (", ")");
-        var texts = rows.get(r).values();
-        for (var i = 0; i < texts.size(); i++) {
-          row.add(parameter.apply(value(kinds.get(i), texts.get(i))));
-        }
+        rows.get(r).values().forEach(value -> row.add(parameter.apply(value)));
         sql.append(row);
       }
       var statement = sql.toString();
