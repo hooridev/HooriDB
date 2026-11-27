@@ -1514,7 +1514,7 @@ final class FakeServers implements Servers {
             case Inserts.Row.Unreadable(var line, var reason) ->
               failure = new Inserts.Failed(line, reason);
             case Inserts.Row.Values(var line, var texts) -> {
-              var values = new Object[columns.size()];
+              var cells = new Object[columns.size()];
               for (int i = 0; i < targets.size() && failure == null; i++) {
                 var text = texts.get(i);
                 var column = columns.get(targets.get(i));
@@ -1528,7 +1528,7 @@ final class FakeServers implements Servers {
                       line, "ERROR: null value in column \"" + column.name() + "\"");
                 } else {
                   try {
-                    values[targets.get(i)] = imported(kind(column.type()), text);
+                    cells[targets.get(i)] = imported(kind(column.type()), text);
                   } catch (RuntimeException _) {
                     failure = new Inserts.Failed(
                         line, "ERROR: invalid input syntax for " + column.type() + ": " + text);
@@ -1536,7 +1536,7 @@ final class FakeServers implements Servers {
                 }
               }
               if (failure == null) {
-                batch.add(Collections.unmodifiableList(Arrays.asList(values)));
+                batch.add(Collections.unmodifiableList(Arrays.asList(cells)));
               }
             }
           }

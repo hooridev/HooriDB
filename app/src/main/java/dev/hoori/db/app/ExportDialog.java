@@ -548,17 +548,17 @@ final class ExportDialog {
     kind = k;
   }
 
-  private static final String COLUMNS = "Columns";
+  private static final String COLUMNS_FIELD = "Columns";
 
   private Form.Field columnsField(boolean busy) {
     Theme t = Theme.CURRENT.get();
     if (checked.size() != 1) {
       return Form.field(
-          COLUMNS, label(Label.Variant.MUTED, "All columns of each table").key("columns"));
+          COLUMNS_FIELD, label(Label.Variant.MUTED, "All columns of each table").key("columns"));
     }
     if (columns == null) {
       return Form.field(
-          COLUMNS,
+          COLUMNS_FIELD,
           row()
               .gap(t.space().s())
               .role("status")
@@ -582,7 +582,7 @@ final class ExportDialog {
               }));
     }
     return Form.field(
-        COLUMNS,
+        COLUMNS_FIELD,
         Card.flush(list.scroll().key("columns")).h(4 * t.size().control()).wFull());
   }
 

@@ -714,7 +714,9 @@ final class ImportDialog {
     }
     box.child(outcome(s).key("import-outcome"));
     var failed = report == null ? List.<Inserts.Failed>of() : report.failed();
-    if (!failed.isEmpty() && !(report.stopped() && failed.size() == 1)) {
+    // A run that stopped at its one failure says it in its outcome alone.
+    var stoppedAtIt = report != null && report.stopped() && failed.size() == 1;
+    if (!failed.isEmpty() && !stoppedAtIt) {
       box.child(label(
           count.failed() > failed.size()
               ? "The first " + failed.size() + " of " + count.failed() + " rows that failed"
