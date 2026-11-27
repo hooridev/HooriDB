@@ -173,6 +173,7 @@ public final class FileRun {
   private StatementReader reader; // under the lock
   private volatile boolean cancelled;
   private boolean interrupted; // the cancel interrupted the run, under the lock
+  private boolean settling; // the run ends, which a cancel no longer changes; under the lock
   private final List<Failed> failures = new ArrayList<>(); // the first LISTED failures
   private long statements; // as Progress counts them
   private long failed;
@@ -201,6 +202,9 @@ public final class FileRun {
     synchronized (lock) {
       if (cancelled) {
         return;
+      }
+      if (settling) {
+        return; // too late: the commit or rollback goes on, within its bound
       }
       cancelled = true;
       if (reader != null) {
@@ -241,6 +245,9 @@ public final class FileRun {
       }
       ending = steps(target, file);
       last = progress(file);
+      if (settle() && ending == Ending.RAN) {
+        ending = Ending.CANCELLED; // after the last step, before the commit
+      }
       calm();
       if (options.transaction()) {
         kept = end(target, ending == Ending.RAN);
@@ -394,6 +401,14 @@ public final class FileRun {
       target.end(); // a session that fails here is closed after the run anyway
     }
     return kept;
+  }
+
+  // From now on a cancel changes nothing; whether one came before.
+  private boolean settle() {
+    synchronized (lock) {
+      settling = true;
+      return cancelled;
+    }
   }
 
   // Clears the interrupt of a cancel, which must not reach what ends the transaction.

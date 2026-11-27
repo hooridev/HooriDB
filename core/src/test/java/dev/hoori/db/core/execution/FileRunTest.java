@@ -330,4 +330,53 @@ class FileRunTest {
     assertEquals(List.of("begin", "SELECT pg_sleep(60)", "rollback", "end"), session.sent);
     assertTrue(report[0].failures().isEmpty());
   }
+
+  @Test
+  void aCancelAsTheFileEndsRollsBackInPlaceOfTheCommit() {
+    var session = new Session(Map.of());
+    var holder = new FileRun[1];
+    // The file's end, read after its last statement ran, is where the cancel comes: beyond the
+    // first window, which held the statement.
+    var text = new StringReader("SELECT 1;\n" + "-- nothing more\n".repeat(10_000)) {
+      @Override
+      public int read(char[] into, int from, int length) throws IOException {
+        int read = super.read(into, from, length);
+        if (read < 0) {
+          holder[0].cancel();
+        }
+        return read;
+      }
+    };
+    holder[0] = new FileRun(
+        () -> new StatementReader(text, POSTGRESQL, -1),
+        POSTGRESQL,
+        new FileRun.Options(false, true),
+        progress -> {});
+    var report = holder[0].run(session);
+    assertEquals(FileRun.Ending.CANCELLED, report.ending());
+    assertEquals(FileRun.Kept.ROLLED_BACK, report.transaction());
+    assertEquals(List.of("begin", "SELECT 1", "rollback", "end"), session.sent);
+    assertFalse(Thread.interrupted(), "the cancel's interrupt was cleared");
+  }
+
+  @Test
+  void aCancelOnceTheCommitBeganChangesNothing() {
+    var holder = new FileRun[1];
+    var session = new Session(Map.of()) {
+      @Override
+      public Optional<Failure> commit() {
+        holder[0].cancel();
+        assertFalse(Thread.currentThread().isInterrupted(), "the commit is not interrupted");
+        return super.commit();
+      }
+    };
+    holder[0] = new FileRun(
+        () -> new StatementReader(new StringReader("SELECT 1;"), POSTGRESQL, -1),
+        POSTGRESQL,
+        new FileRun.Options(false, true),
+        progress -> {});
+    var report = holder[0].run(session);
+    assertEquals(FileRun.Ending.RAN, report.ending());
+    assertEquals(FileRun.Kept.COMMITTED, report.transaction());
+  }
 }
