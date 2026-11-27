@@ -52,7 +52,8 @@ class SyncLanesServerTest {
     var source = table(provider, "sync_lane_source_" + suffix);
     var target = table(provider, "sync_lane_target_" + suffix);
     var setup = ServersServerTest.open(server);
-    try {
+    try (AutoCloseable _ = setup::close;
+        var _ = dropping(setup, provider, source, target)) {
       run(
           setup,
           "CREATE TABLE " + qualified(provider, source) + " (id integer PRIMARY KEY, v varchar(9))",
@@ -90,12 +91,6 @@ class SyncLanesServerTest {
           lane.close(ended -> {}).join();
         }
       }
-    } finally {
-      run(
-          setup,
-          "DROP TABLE " + qualified(provider, source),
-          "DROP TABLE " + qualified(provider, target));
-      setup.close();
     }
   }
 
@@ -111,7 +106,8 @@ class SyncLanesServerTest {
     var target = table(provider, "sync_script_target_" + suffix);
     var moment = provider == Provider.POSTGRESQL ? "timestamptz" : "timestamp(6)";
     var setup = ServersServerTest.open(server);
-    try {
+    try (AutoCloseable _ = setup::close;
+        var _ = dropping(setup, provider, source, target)) {
       run(
           setup,
           "CREATE TABLE " + qualified(provider, source) + " (at " + moment + " PRIMARY KEY,"
@@ -148,13 +144,17 @@ class SyncLanesServerTest {
           lane.close(ended -> {}).join();
         }
       }
-    } finally {
-      run(
-          setup,
-          "DROP TABLE " + qualified(provider, source),
-          "DROP TABLE " + qualified(provider, target));
-      setup.close();
     }
+  }
+
+  // Drops the tables on the link once the test is over, also where making them failed partway: a
+  // failure of the test stays the one that shows, with the drop's beside it.
+  private static AutoCloseable dropping(Servers.Link link, Provider provider, Table... tables) {
+    return () -> {
+      for (var table : tables) {
+        run(link, "DROP TABLE IF EXISTS " + qualified(provider, table));
+      }
+    };
   }
 
   // A side whose sessions' ends tell nothing.

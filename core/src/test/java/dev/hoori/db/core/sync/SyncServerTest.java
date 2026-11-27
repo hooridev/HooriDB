@@ -56,7 +56,8 @@ class SyncServerTest {
     var one = pg ? "'\\x01'::bytea" : "x'01'";
     var long1 = pg ? "repeat('x', 2000) || 'a'" : "CONCAT(REPEAT('x', 2000), 'a')";
     var long2 = pg ? "repeat('x', 2000) || 'b'" : "CONCAT(REPEAT('x', 2000), 'b')";
-    try (var connection = open(provider)) {
+    try (var connection = open(provider);
+        var _ = dropping(provider, source, target)) {
       execute(
           connection,
           "CREATE TABLE " + qualified(provider, source) + " (id integer PRIMARY KEY,"
@@ -71,48 +72,40 @@ class SyncServerTest {
           "INSERT INTO " + qualified(provider, target) + " VALUES"
               + " (2, 'two', 2.5, NULL, " + one + ", 'k'), (3, 'THREE', 3.000, 'n', NULL, 'k'),"
               + " (4, 'four', 4, " + long2 + ", NULL, 'k'), (5, 'five', 5, NULL, NULL, 'k')");
-      try {
-        var pairing = pairing(connection, provider, source, target);
-        assertEquals(Pairing.PRIMARY_KEY, pairing.keyName());
-        assertEquals(List.of("extra"), pairing.onlyInSource());
-        assertEquals(List.of("kept"), pairing.onlyInTarget());
+      var pairing = pairing(connection, provider, source, target);
+      assertEquals(Pairing.PRIMARY_KEY, pairing.keyName());
+      assertEquals(List.of("extra"), pairing.onlyInSource());
+      assertEquals(List.of("kept"), pairing.onlyInTarget());
 
-        var sent = new CopyOnWriteArrayList<Sent>();
-        var compared = Journal.recording(sent::add, () -> compare(provider, pairing));
-        assertEquals(new Tally(1, 1, 2, 1, 4, 4), compared.tally());
-        var differences = compared.differences();
-        assertEquals(1L, ((Difference.OnlyInSource) differences.get(0)).source().getFirst());
-        var three = (Difference.Different) differences.get(1);
-        assertEquals(List.of("name"), names(pairing, three));
-        var four = (Difference.Different) differences.get(2);
-        assertEquals(List.of("note"), names(pairing, four));
-        assertEquals(2001, ((String) four.source().get(3)).length());
-        assertEquals(5L, ((Difference.OnlyInTarget) differences.get(3)).target().getFirst());
-        // Each table's rows in one read, logged as a read of rows.
+      var sent = new CopyOnWriteArrayList<Sent>();
+      var compared = Journal.recording(sent::add, () -> compare(provider, pairing));
+      assertEquals(new Tally(1, 1, 2, 1, 4, 4), compared.tally());
+      var differences = compared.differences();
+      assertEquals(1L, ((Difference.OnlyInSource) differences.get(0)).source().getFirst());
+      var three = (Difference.Different) differences.get(1);
+      assertEquals(List.of("name"), names(pairing, three));
+      var four = (Difference.Different) differences.get(2);
+      assertEquals(List.of("note"), names(pairing, four));
+      assertEquals(2001, ((String) four.source().get(3)).length());
+      assertEquals(5L, ((Difference.OnlyInTarget) differences.get(3)).target().getFirst());
+      // Each table's rows in one read, logged as a read of rows.
+      assertEquals(
+          2,
+          sent.stream()
+              .filter(s -> s.purpose() == Purpose.ROWS && s.text().contains("ORDER BY"))
+              .count());
+
+      apply(provider, compared.pairing(), Choice.ALL);
+      var again = compare(provider, pairing);
+      assertEquals(new Tally(0, 0, 0, 4, 4, 4), again.tally());
+      try (var other = open(provider)) {
+        var table = table(provider, target);
+        var rows = Rows.read(other, provider, table, Catalog.columns(other, provider, table), 0, 9)
+            .rows();
         assertEquals(
-            2,
-            sent.stream()
-                .filter(s -> s.purpose() == Purpose.ROWS && s.text().contains("ORDER BY"))
-                .count());
-
-        apply(provider, compared.pairing(), Choice.ALL);
-        var again = compare(provider, pairing);
-        assertEquals(new Tally(0, 0, 0, 4, 4, 4), again.tally());
-        try (var other = open(provider)) {
-          var table = table(provider, target);
-          var rows = Rows.read(
-                  other, provider, table, Catalog.columns(other, provider, table), 0, 9)
-              .rows();
-          assertEquals(
-              List.of("d", "k", "k", "k"), rows.stream().map(row -> row.get(5)).toList());
-          assertEquals(new BigDecimal("1.000"), rows.getFirst().get(2));
-          assertEquals(new Binary(new byte[] {1}, 1), rows.get(1).get(4));
-        }
-      } finally {
-        dropAfter(
-            provider,
-            "DROP TABLE " + qualified(provider, source),
-            "DROP TABLE " + qualified(provider, target));
+            List.of("d", "k", "k", "k"), rows.stream().map(row -> row.get(5)).toList());
+        assertEquals(new BigDecimal("1.000"), rows.getFirst().get(2));
+        assertEquals(new Binary(new byte[] {1}, 1), rows.get(1).get(4));
       }
     }
   }
@@ -130,7 +123,8 @@ class SyncServerTest {
     for (var key : keys) {
       values.append(values.isEmpty() ? "" : ", ").append("('").append(key).append("', 1)");
     }
-    try (var connection = open(provider)) {
+    try (var connection = open(provider);
+        var _ = dropping(provider, source, target)) {
       var create = " (code varchar(10) NOT NULL PRIMARY KEY, n integer)";
       execute(
           connection,
@@ -140,21 +134,14 @@ class SyncServerTest {
           "INSERT INTO " + qualified(provider, target) + " VALUES " + values,
           "DELETE FROM " + qualified(provider, target) + " WHERE code = 'é'",
           "UPDATE " + qualified(provider, target) + " SET n = 2 WHERE code = '😀'");
-      try {
-        var pairing = pairing(connection, provider, source, target);
-        var compared = compare(provider, pairing);
-        assertEquals(
-            new Tally(1, 0, 1, keys.size() - 2, keys.size(), keys.size() - 1), compared.tally());
-        apply(provider, compared.pairing(), Choice.ALL);
-        assertEquals(
-            new Tally(0, 0, 0, keys.size(), keys.size(), keys.size()),
-            compare(provider, pairing).tally());
-      } finally {
-        dropAfter(
-            provider,
-            "DROP TABLE " + qualified(provider, source),
-            "DROP TABLE " + qualified(provider, target));
-      }
+      var pairing = pairing(connection, provider, source, target);
+      var compared = compare(provider, pairing);
+      assertEquals(
+          new Tally(1, 0, 1, keys.size() - 2, keys.size(), keys.size() - 1), compared.tally());
+      apply(provider, compared.pairing(), Choice.ALL);
+      assertEquals(
+          new Tally(0, 0, 0, keys.size(), keys.size(), keys.size()),
+          compare(provider, pairing).tally());
     }
   }
 
@@ -164,7 +151,8 @@ class SyncServerTest {
   void aUniqueKeyPairsAndNamesTheRows(Provider provider) throws Exception {
     var source = unique("sync_unique_source");
     var target = unique("sync_unique_target");
-    try (var connection = open(provider)) {
+    try (var connection = open(provider);
+        var _ = dropping(provider, source, target)) {
       execute(
           connection,
           "CREATE TABLE " + qualified(provider, source)
@@ -174,21 +162,14 @@ class SyncServerTest {
               + provider.quote(target + "_code") + " UNIQUE (code))",
           "INSERT INTO " + qualified(provider, source) + " VALUES ('a', 1), ('b', 2), ('c', 3)",
           "INSERT INTO " + qualified(provider, target) + " VALUES ('b', 20), ('c', 3), ('d', 4)");
-      try {
-        var pairing = pairing(connection, provider, source, target);
-        assertEquals(Pairing.PRIMARY_KEY, pairing.keyName());
-        var compared = compare(provider, pairing);
-        assertEquals(new Tally(1, 1, 1, 1, 3, 3), compared.tally());
+      var pairing = pairing(connection, provider, source, target);
+      assertEquals(Pairing.PRIMARY_KEY, pairing.keyName());
+      var compared = compare(provider, pairing);
+      assertEquals(new Tally(1, 1, 1, 1, 3, 3), compared.tally());
 
-        // Only the update: the rest stays as it is.
-        apply(provider, compared.pairing(), new Choice(false, true, false));
-        assertEquals(new Tally(1, 1, 0, 2, 3, 3), compare(provider, pairing).tally());
-      } finally {
-        dropAfter(
-            provider,
-            "DROP TABLE " + qualified(provider, source),
-            "DROP TABLE " + qualified(provider, target));
-      }
+      // Only the update: the rest stays as it is.
+      apply(provider, compared.pairing(), new Choice(false, true, false));
+      assertEquals(new Tally(1, 1, 0, 2, 3, 3), compare(provider, pairing).tally());
     }
   }
 
@@ -200,7 +181,8 @@ class SyncServerTest {
   void aUniqueValueMovesBetweenRowsAcrossBatches(Provider provider) throws Exception {
     var source = unique("sync_move_source");
     var target = unique("sync_move_target");
-    try (var connection = open(provider)) {
+    try (var connection = open(provider);
+        var _ = dropping(provider, source, target)) {
       var create = " (id integer PRIMARY KEY, email varchar(20) NOT NULL UNIQUE)";
       execute(
           connection,
@@ -210,19 +192,12 @@ class SyncServerTest {
               + " VALUES (1, 'a'), (3, 'c'), (6, 'f'), (7, 'g')",
           "INSERT INTO " + qualified(provider, target)
               + " VALUES (1, 'b'), (2, 'a'), (5, 'c'), (7, 'f')");
-      try {
-        var pairing = pairing(connection, provider, source, target);
-        var compared = compare(provider, pairing);
-        assertEquals(new Tally(2, 2, 2, 0, 4, 4), compared.tally());
-        var made = apply(provider, compared.pairing(), Choice.ALL);
-        assertEquals(6, made.changes());
-        assertEquals(new Tally(0, 0, 0, 4, 4, 4), compare(provider, pairing).tally());
-      } finally {
-        dropAfter(
-            provider,
-            "DROP TABLE " + qualified(provider, source),
-            "DROP TABLE " + qualified(provider, target));
-      }
+      var pairing = pairing(connection, provider, source, target);
+      var compared = compare(provider, pairing);
+      assertEquals(new Tally(2, 2, 2, 0, 4, 4), compared.tally());
+      var made = apply(provider, compared.pairing(), Choice.ALL);
+      assertEquals(6, made.changes());
+      assertEquals(new Tally(0, 0, 0, 4, 4, 4), compare(provider, pairing).tally());
     }
   }
 
@@ -234,29 +209,26 @@ class SyncServerTest {
     var pg = provider == Provider.POSTGRESQL;
     var name = unique("sync_long");
     var three = pg ? "repeat('x', 3000000)" : "REPEAT('x', 3000000)";
-    try (var connection = open(provider)) {
+    try (var connection = open(provider);
+        var _ = dropping(provider, name)) {
       execute(
           connection,
           "CREATE TABLE " + qualified(provider, name) + " (id integer PRIMARY KEY, note "
               + (pg ? "text" : "mediumtext") + ")",
           "INSERT INTO " + qualified(provider, name) + " VALUES (1, " + three + "), (2, " + three
               + "), (3, " + three + "), (4, " + three + ")");
-      try {
-        var table = table(provider, name);
-        var columns = Catalog.columns(connection, provider, table);
-        try (var rows = new Execution(
-            connection, provider, KeyedRead.of(connection, provider, table, columns, List.of(0)))) {
-          var first = (Result.Rows) rows.next(500).results().getFirst();
-          assertEquals(3, first.rows().size());
-          assertEquals(3_000_000, ((String) first.rows().getFirst().get(1)).length());
-          var rest = rows.next(500);
-          assertEquals(1, ((Result.Rows) rest.results().getFirst()).rows().size());
-          assertFalse(rest.more());
-        }
-        assertLeftAsItWas(connection, provider);
-      } finally {
-        dropAfter(provider, "DROP TABLE " + qualified(provider, name));
+      var table = table(provider, name);
+      var columns = Catalog.columns(connection, provider, table);
+      try (var rows = new Execution(
+          connection, provider, KeyedRead.of(connection, provider, table, columns, List.of(0)))) {
+        var first = (Result.Rows) rows.next(500).results().getFirst();
+        assertEquals(3, first.rows().size());
+        assertEquals(3_000_000, ((String) first.rows().getFirst().get(1)).length());
+        var rest = rows.next(500);
+        assertEquals(1, ((Result.Rows) rest.results().getFirst()).rows().size());
+        assertFalse(rest.more());
       }
+      assertLeftAsItWas(connection, provider);
     }
   }
 
@@ -394,10 +366,16 @@ class SyncServerTest {
     }
   }
 
-  private static void dropAfter(Provider provider, String... statements) throws Exception {
-    try (var connection = open(provider)) {
-      execute(connection, statements);
-    }
+  // Drops the tables, on a connection of its own, once the test is over, also where making them
+  // failed partway: a failure of the test stays the one that shows, with the drop's beside it.
+  private static AutoCloseable dropping(Provider provider, String... tables) {
+    return () -> {
+      try (var connection = open(provider)) {
+        for (var table : tables) {
+          execute(connection, "DROP TABLE IF EXISTS " + qualified(provider, table));
+        }
+      }
+    };
   }
 
   private static String unique(String name) {
