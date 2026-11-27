@@ -41,16 +41,14 @@ public final class TransactionControl {
     return false;
   }
 
-  // The code's words as the reading reads them, in lower case, without a variable's @.
+  // The code's words as the reading reads them, in lower case, without a system variable's @@,
+  // as SET @@autocommit sets autocommit; a user variable's @ stays, as @autocommit is another.
   private static List<String> words(String sql, Provider provider, Tokens.Reading reading) {
     var words = new ArrayList<String>();
     for (var token : Tokens.of(sql, provider, reading)) {
       var text = token.text();
-      int k = 0;
-      while (k < text.length() && text.charAt(k) == '@') {
-        k++;
-      }
-      words.add(Tokens.keyword(text.substring(k)).toLowerCase(Locale.ROOT));
+      var word = text.startsWith("@@") ? text.substring(2) : text;
+      words.add(Tokens.keyword(word).toLowerCase(Locale.ROOT));
     }
     return words;
   }

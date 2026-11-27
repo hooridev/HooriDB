@@ -58,6 +58,10 @@ class TransactionControlTest {
         // Only reads it, to set it back later.
         "SET @OLD_AUTOCOMMIT=@@AUTOCOMMIT",
         "SET autocommit_x = @@autocommit",
+        // A user variable of that name.
+        "SET @autocommit = 0",
+        "SET @autocommit := 1, @x = @@autocommit",
+
 
         "LOCK TABLES t WRITE",
         "CREATE PROCEDURE p() BEGIN COMMIT; END")) {
