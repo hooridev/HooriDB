@@ -179,6 +179,12 @@ class FindTabTest {
     s.keeping.persist(s.keeping.consolesKept);
     c.run(app, SETTLE);
     assertEquals(List.of(), new ConsoleStore(dir.resolve("config")).load());
+    // Open in console, which reuses a console of the database, does not take the definition's.
+    s.openInConsole(SHOP.id(), s.tabs.main().active(), "shop", "SELECT 1");
+    var consoles = s.consoles(null);
+    assertEquals(2, consoles.size(), consoles.toString());
+    assertTrue(consoles.getFirst().text.startsWith("CREATE FUNCTION"), consoles.getFirst().text);
+    assertEquals("SELECT 1", consoles.getLast().text);
     // The view's text is found too, where its name does not match.
     c.run(app, "press role=tab label=\"" + TAB + "\"\nframe\nadvance 1\nframe\n");
     c.run(app, "press #find-text\nkey A control\ntype \"sum(\"\nkey Enter\nframe\n" + SETTLE);

@@ -1184,7 +1184,10 @@ final class State {
     openConsole(id, group, database, sql);
   }
 
-  /** An open console of the connection on the database, one in these tabs first; or null. */
+  /**
+   * An open console of the connection on the database, one in these tabs first, that is neither a
+   * query's nor a definition's; or null.
+   */
   private ConsoleTab findConsole(UUID id, String database, TabGroups.Group<Tab> preferred) {
     var groups = new ArrayList<>(tabs.groups());
     groups.remove(preferred);
@@ -1193,6 +1196,7 @@ final class State {
       for (var tab : group.tabs()) {
         if (tab instanceof ConsoleTab x
             && x.queryId == null
+            && !x.definition // a definition to read, which does not run
             && id.equals(x.id)
             && Objects.equals(x.database, database)) {
           return x;
