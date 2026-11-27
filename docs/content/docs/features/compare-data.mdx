@@ -22,7 +22,7 @@ As soon as you choose the target, HooriDB reads the columns and keys of both tab
   - Columns only in the source are not compared or written.
   - Columns only in the target keep their values on update and take their defaults on insert.
   - Matched columns whose values are of different kinds, such as a date and a text, are not compared. Neither are decimals in the source whose target column holds integers, which would round them.
-- **Rows** are paired by a key that both tables have on the same columns: the source's primary key, or else one of its unique keys whose columns are all `NOT NULL`. A partial unique index, such as PostgreSQL's `CREATE UNIQUE INDEX … WHERE …`, or one that is not valid yet, does not count. Without such a key, the tables cannot be compared, and the tab says so. If a key still comes twice, the comparison stops and says that the key is not unique.
+- **Rows** are paired by a key that both tables have on the same columns: the source's primary key, or else one of its unique keys whose columns are all `NOT NULL`. A partial unique index, such as PostgreSQL's `CREATE UNIQUE INDEX … WHERE …`, or one that is not valid yet, does not count. Without such a key, the tables cannot be compared, and the tab says so; once you have added one, press **Compare** to pair them again. If a key still comes twice, the comparison stops and says that the key is not unique.
 
 ## Compare
 
@@ -66,7 +66,7 @@ If the target's connection is read-only, you can still compare the tables, but *
 
 ## Save as a script
 
-Press **Save as script…** and choose a file. HooriDB then writes the statements that **Apply** would run to that file, in the same order, wrapped in `START TRANSACTION;` and `COMMIT;`, instead of running them. Like **Apply**, it reads both tables again first. Nothing is written to the target. Text in the script is written as MySQL and MariaDB read it without `NO_BACKSLASH_ESCAPES`. On MySQL and MariaDB, a `timestamp` is written as `FROM_UNIXTIME(…)` of its seconds, which the session reads in its time zone; in an hour that the zone repeats, it can be the other moment, which **Apply** refuses instead.
+Press **Save as script…** and choose a file. HooriDB then writes the statements that **Apply** would run to that file, in the same order, wrapped in `START TRANSACTION;` and `COMMIT;`, instead of running them. Like **Apply**, it reads both tables again first. Nothing is written to the target. The file is written beside the one you chose and replaces it only once it is complete, so **Cancel** before then leaves an existing file as it was. Text in the script is written as MySQL and MariaDB read it without `NO_BACKSLASH_ESCAPES`. On MySQL and MariaDB, a `timestamp` is written as `FROM_UNIXTIME(…)` of its seconds, which the session reads in its time zone; in an hour that the zone repeats, it can be the other moment, which **Apply** refuses instead.
 
 ## Limits
 
