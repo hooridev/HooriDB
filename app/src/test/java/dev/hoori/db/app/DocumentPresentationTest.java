@@ -261,7 +261,10 @@ class DocumentPresentationTest {
     assertEquals(first, presentation.currentDocument());
 
     // Moving caret down into the second document resolves to the second document.
-    Script.run("press #json\nkey End control\nkey ArrowUp\nkey ArrowUp\nframe\n", app, dir);
+    Script.run(
+        "press #json\nkey End control shift\nkey ArrowUp shift\nkey ArrowUp shift\nframe\n",
+        app,
+        dir);
     assertEquals(second, presentation.currentDocument());
 
     // Switching to Tree mode: nothing selected yet -> null; selecting a nested field resolves its
