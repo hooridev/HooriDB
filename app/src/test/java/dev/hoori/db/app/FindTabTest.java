@@ -106,9 +106,11 @@ class FindTabTest {
     assertTrue(row(found, 1).contains("\"orders\""), row(found, 1));
     assertTrue(row(found, 3).contains("\"order_totals\""), row(found, 3));
     assertTrue(row(found, 3).contains("Definition: SELECT customer_id"), row(found, 3));
-    // Read anew on the second link, the search's own, not from what the tree read.
+    // Read anew on the second link, the search's own, not from what the tree read, which is
+    // read-only, as the tree's is, so that a view whose function writes changes nothing.
     assertTrue(
         c.servers.linked.contains("2 objects " + PG + "/shop.public"), c.servers.linked.toString());
+    assertTrue(c.servers.readOnly(2));
     assertFalse(c.servers.calls.contains("columns " + PG + "/shop.public.customers"));
     // It went to the statement log as a search.
     assertTrue(

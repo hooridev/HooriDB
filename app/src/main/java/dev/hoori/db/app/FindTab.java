@@ -46,8 +46,8 @@ import java.util.function.IntFunction;
 
 /**
  * A search of a database or schema of a connection: the names and definitions of its objects, or
- * the values in its tables, on a session of the tab's own, which it opens for its first search
- * and which nothing else uses. A search in data reads the tables and their estimated sizes first,
+ * the values in its tables, on a session of the tab's own, which it opens for its first search,
+ * read-only at a server of SQL as the tree's, and which nothing else uses. A search in data reads the tables and their estimated sizes first,
  * which the user chooses from, and then searches one table after another, each in one query, at
  * most {@link Search#LIMIT} rows of it counted; it can be cancelled between and in its queries.
  */
@@ -156,7 +156,7 @@ final class FindTab implements Tab {
       closeSession(s);
     }
     if (lane == null && !closed) {
-      var session = s.catalog.session(s, id, scope.database().name());
+      var session = s.catalog.browsingSession(s, id, scope.database().name());
       if (session == null) {
         return Optional.empty();
       }
