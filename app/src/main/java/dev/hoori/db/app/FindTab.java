@@ -47,9 +47,10 @@ import java.util.function.Function;
 /**
  * A search of a database or schema of a connection: the names and definitions of its objects, or
  * the values in its tables, on a session of the tab's own, which it opens for its first search,
- * read-only at a server of SQL as the tree's, and which nothing else uses. A search in data reads the tables and their estimated sizes first,
- * which the user chooses from, and then searches one table after another, each in one query, at
- * most {@link Search#LIMIT} rows of it counted; it can be cancelled between and in its queries.
+ * read-only at a server of SQL as the tree's, and which nothing else uses. A search in data reads
+ * the tables and their estimated sizes first, which the user chooses from, and then searches one
+ * table after another, each in one query, at most {@link Search#LIMIT} rows of it counted; it can
+ * be cancelled between and in its queries. A column's hits open as its table filtered.
  */
 final class FindTab implements Tab {
 
