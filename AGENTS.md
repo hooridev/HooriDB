@@ -398,7 +398,7 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   rows `values` or `rows` give, written by core's file writers; an import is keyed
   `import <host>/<path>`, each of its batches `import <host>/<path> <n>`, from 1, a cancel of which
   ends it as cancelled, and its commit `import <host>/<path> commit`, which an interrupt does not
-  end, with the file
+  end; a stop or a cancel leaves the rows as last committed, the emptying too, with the file
   read by core and its values read as the columns' kinds say, a NULL for a column that takes none
   refused, and a row that holds a value `refusesImported` names refused as a duplicate key; a read-only link
   refuses it unsent. Core's `TableFilesServerTest` writes every kind of value to files on each

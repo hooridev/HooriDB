@@ -1495,9 +1495,10 @@ final class FakeServers implements Servers {
         throw queryFailure(QueryException.Failure.OTHER);
       }
       var refusing = refusedValues.getOrDefault(path, java.util.Set.of());
-      var committed = new ArrayList<>(options.empty() ? List.of() : materializeRows(path, columns));
-      int before = committed.size();
-      var open = new ArrayList<>(committed);
+      // The table's rows as committed, which only a commit replaces, and those of the open
+      // transaction, which the emptying is in, of which the import wrote those after the kept.
+      var original = materializeRows(path, columns);
+      var importing = new Importing(original, options.empty() ? List.of() : original);
       var failed = new ArrayList<Inserts.Failed>();
       long read = 0;
       long failures = 0;
@@ -1547,18 +1548,15 @@ final class FakeServers implements Servers {
             }
           }
           if (stopped == null && batch.size() >= options.batch()) {
-            batches =
-                batch(key, ++batches, batch, open, committed, options, progress, read, failures);
+            batches = batch(key, ++batches, batch, importing, options, progress, read, failures);
           }
         }
         if (stopped == null && !batch.isEmpty()) {
-          batches =
-              batch(key, ++batches, batch, open, committed, options, progress, read, failures);
+          batches = batch(key, ++batches, batch, importing, options, progress, read, failures);
         }
         if (stopped == null) {
           enduring(key + " commit");
-          committed.clear();
-          committed.addAll(open);
+          importing.commit();
         }
       } catch (QueryException e) {
         if (e.failure() != QueryException.Failure.CANCELLED) {
@@ -1566,14 +1564,40 @@ final class FakeServers implements Servers {
         }
         cancelled = true;
       } finally {
-        values.put(path, List.copyOf(committed));
-        counts.put(path, (long) committed.size());
-        estimates.put(path, OptionalLong.of(committed.size()));
+        values.put(path, importing.committed);
+        counts.put(path, (long) importing.committed.size());
+        estimates.put(path, OptionalLong.of(importing.committed.size()));
       }
-      var written = committed.size() - before;
       done.add(key);
       return new Inserts.Report(
-          new Inserts.Count(read, written, written, failures), failed, stopped, cancelled);
+          new Inserts.Count(read, importing.imported, importing.imported, failures),
+          failed,
+          stopped,
+          cancelled);
+    }
+
+    // An import's rows as they go: those committed, those of its open transaction, and how many of
+    // those committed it wrote.
+    private static final class Importing {
+      List<List<Object>> committed;
+      final List<List<Object>> open;
+      private final int kept;
+      long imported;
+
+      Importing(List<List<Object>> committed, List<List<Object>> kept) {
+        this.committed = List.copyOf(committed);
+        this.open = new ArrayList<>(kept);
+        this.kept = kept.size();
+      }
+
+      long written() {
+        return open.size() - kept;
+      }
+
+      void commit() {
+        committed = List.copyOf(open);
+        imported = written();
+      }
     }
 
     // A call that an interrupt does not end, as a commit within core's bound: it waits for its
@@ -1604,8 +1628,7 @@ final class FakeServers implements Servers {
         String key,
         int number,
         List<List<Object>> batch,
-        List<List<Object>> open,
-        List<List<Object>> committed,
+        Importing importing,
         Inserts.Options options,
         Inserts.Progress progress,
         long read,
@@ -1628,13 +1651,12 @@ final class FakeServers implements Servers {
             }
             return (long) batch.size();
           });
-      open.addAll(batch);
+      importing.open.addAll(batch);
       batch.clear();
       if (options.commit() == Inserts.Commit.EACH_BATCH) {
-        committed.clear();
-        committed.addAll(open);
+        importing.commit();
       }
-      progress.at(new Inserts.Count(read, open.size(), committed.size(), failures));
+      progress.at(new Inserts.Count(read, importing.written(), importing.imported, failures));
       return number;
     }
 

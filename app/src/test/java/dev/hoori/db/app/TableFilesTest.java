@@ -283,6 +283,19 @@ class TableFilesTest {
   }
 
   @Test
+  void aStopTakesBackTheEmptyingOfTheTableToo() throws Exception {
+    servers.refusesImported(CUSTOMERS, "Bob");
+    var before = servers.rowsOf(CUSTOMERS);
+    var file = Files.writeString(out.resolve("people.csv"), "id,name\n3,Carol\n4,Bob\n");
+    var app = importing(file, "press role=radio label=\"Empty the table first\"\nframe\n");
+    c.run(app, press("import") + SETTLE + "snap done\n");
+    var done = c.tree("done");
+    assertTrue(line(done, "#import-outcome").contains("Stopped at line 3"), done);
+    assertTrue(done.contains("Nothing was imported."), done);
+    assertEquals(before, servers.rowsOf(CUSTOMERS));
+  }
+
+  @Test
   void importWaitsForThePreviewOfOptionsChanged() throws Exception {
     var file = Files.writeString(out.resolve("people.csv"), "id,name\n3,Carol\n");
     var app = importing(file, "");
