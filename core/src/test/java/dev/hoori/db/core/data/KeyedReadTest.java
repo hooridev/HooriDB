@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.OffsetDateTime;
+import java.time.OffsetTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
@@ -34,6 +35,32 @@ class KeyedReadTest {
     assertTrue(KeyedRead.compare(Double.POSITIVE_INFINITY, new BigDecimal("1e300")) > 0);
     assertTrue(KeyedRead.compare(Double.NEGATIVE_INFINITY, Long.MIN_VALUE) < 0);
     assertEquals(0, KeyedRead.compare(Double.NaN, Double.NaN));
+    assertEquals(0, KeyedRead.compare(Double.POSITIVE_INFINITY, Float.POSITIVE_INFINITY));
+    // A decimal beyond what a double holds is still finite, as PostgreSQL's numeric has both.
+    assertTrue(KeyedRead.compare(new BigDecimal("1e400"), Double.POSITIVE_INFINITY) < 0);
+    assertTrue(KeyedRead.compare(Double.POSITIVE_INFINITY, new BigDecimal("1e400")) > 0);
+    assertTrue(KeyedRead.compare(new BigDecimal("-1e400"), Double.NEGATIVE_INFINITY) > 0);
+    assertTrue(KeyedRead.compare(new BigDecimal("1e400"), new BigDecimal("1e401")) < 0);
+  }
+
+  // At the same time in UTC, the greater offset first, as PostgreSQL orders time with time zone.
+  @Test
+  void timesWithAnOffsetGoByTheirTimeInUtcThenTheGreaterOffsetFirst() {
+    var times = new ArrayList<>(List.of(
+        OffsetTime.parse("10:00Z"),
+        OffsetTime.parse("11:00+01:00"),
+        OffsetTime.parse("09:30Z"),
+        OffsetTime.parse("12:00+02:00")));
+    times.sort(KeyedRead::compare);
+    assertEquals(
+        List.of(
+            OffsetTime.parse("09:30Z"),
+            OffsetTime.parse("12:00+02:00"),
+            OffsetTime.parse("11:00+01:00"),
+            OffsetTime.parse("10:00Z")),
+        times);
+    assertEquals(
+        0, KeyedRead.compare(OffsetTime.parse("11:00+01:00"), OffsetTime.parse("11:00+01:00")));
   }
 
   @Test

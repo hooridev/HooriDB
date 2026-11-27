@@ -109,11 +109,13 @@ public final class KeyedRead {
 
   /**
    * The order of the values of a key's column, as a keyed read gives them: texts by their code
-   * points, numbers by their value, whatever their Java type, with NaN above all others as
-   * PostgreSQL has it; booleans false first; dates, times and moments by when they are; binary
-   * data by its bytes, unsigned. Values of other types, such as the text a server writes for a date
-   * that the Java type cannot hold, come by their type and then by their text, which need not be
-   * the server's order: a merge finds that in keys out of order.
+   * points, numbers by their value, whatever their Java type, with the infinities beyond every
+   * finite number and NaN above all others as PostgreSQL has it; booleans false first; dates, times
+   * and moments by when they are, and times of a day with an offset that are at the same time in
+   * UTC with the greater offset first, as PostgreSQL orders them; binary data by its bytes,
+   * unsigned. Values of other types, such as the text a server writes for a date that the Java type
+   * cannot hold, come by their type and then by their text, which need not be the server's order: a
+   * merge finds that in keys out of order.
    */
   public static int compare(Object a, Object b) {
     return switch (a) {
@@ -123,7 +125,10 @@ public final class KeyedRead {
       case LocalDate x when b instanceof LocalDate y -> x.compareTo(y);
       case LocalTime x when b instanceof LocalTime y -> x.compareTo(y);
       case LocalDateTime x when b instanceof LocalDateTime y -> x.compareTo(y);
-      case OffsetTime x when b instanceof OffsetTime y -> x.compareTo(y);
+      // ZoneOffset orders the greater offset first, where OffsetTime orders it last.
+      case OffsetTime x
+      when b instanceof OffsetTime y ->
+        x.isEqual(y) ? x.getOffset().compareTo(y.getOffset()) : x.compareTo(y);
       case OffsetDateTime x when b instanceof OffsetDateTime y -> x.compareTo(y);
       case Binary x when b instanceof Binary y -> Arrays.compareUnsigned(x.bytes(), y.bytes());
       case null, default -> {
@@ -150,19 +155,22 @@ public final class KeyedRead {
     return Boolean.compare(i < a.length(), j < b.length());
   }
 
-  // Exactly, as decimals; infinities beyond them, and NaN above all, as Double.compare puts them.
+  // Exactly, as decimals; infinities beyond them, and NaN above all. A decimal too great for a
+  // double is finite all the same, which its doubleValue would make an infinity.
   private static int numbers(Number a, Number b) {
-    return finite(a) && finite(b)
-        ? decimal(a).compareTo(decimal(b))
-        : Double.compare(a.doubleValue(), b.doubleValue());
+    int by = Integer.compare(rank(a), rank(b));
+    return by != 0 || rank(a) != 0 ? by : decimal(a).compareTo(decimal(b));
   }
 
-  private static boolean finite(Number value) {
-    return switch (value) {
-      case Double d -> Double.isFinite(d);
-      case Float f -> Float.isFinite(f);
-      default -> true;
+  // Where the number stands among all: -1 for minus infinity, 0 for a finite one, 1 for
+  // infinity, 2 for NaN.
+  private static int rank(Number value) {
+    double d = switch (value) {
+      case Double x -> x;
+      case Float x -> x;
+      default -> 0;
     };
+    return Double.isNaN(d) ? 2 : Double.isInfinite(d) ? (int) Math.signum(d) : 0;
   }
 
   /** The number as a decimal; a finite one of floating point as the shortest text that is it. */

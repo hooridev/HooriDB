@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -229,6 +230,54 @@ class SyncServerTest {
         assertFalse(rest.more());
       }
       assertLeftAsItWas(connection, provider);
+    }
+  }
+
+  // Times of a day with an offset that are at the same time in UTC are keys of their own, which
+  // PostgreSQL orders with the greater offset first, as the merge then does.
+  @Test
+  void timeKeysWithAnOffsetPairInPostgreSqlsOrder() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    var source = unique("sync_timetz_source");
+    var target = unique("sync_timetz_target");
+    try (var connection = open(provider);
+        var _ = dropping(provider, source, target)) {
+      var create = " (at time with time zone PRIMARY KEY, n integer)";
+      execute(
+          connection,
+          "CREATE TABLE " + qualified(provider, source) + create,
+          "CREATE TABLE " + qualified(provider, target) + create,
+          "INSERT INTO " + qualified(provider, source) + " VALUES ('09:30+00', 1),"
+              + " ('12:00+02', 1), ('11:00+01', 1), ('10:00+00', 1)",
+          "INSERT INTO " + qualified(provider, target) + " VALUES ('08:00+00', 1),"
+              + " ('12:00+02', 2), ('11:00+01', 1), ('10:00+00', 1)");
+      var pairing = pairing(connection, provider, source, target);
+      var compared = compare(provider, pairing);
+      assertEquals(new Tally(1, 1, 1, 2, 4, 4), compared.tally());
+      apply(provider, compared.pairing(), Choice.ALL);
+      assertEquals(new Tally(0, 0, 0, 4, 4, 4), compare(provider, pairing).tally());
+    }
+  }
+
+  // PostgreSQL's numeric holds numbers beyond what a double does and the infinities, which are
+  // keys of their own.
+  @Test
+  void numericKeysBeyondADoubleAreNotInfinities() throws Exception {
+    var provider = Provider.POSTGRESQL;
+    var source = unique("sync_numeric_source");
+    var target = unique("sync_numeric_target");
+    try (var connection = open(provider);
+        var _ = dropping(provider, source, target)) {
+      var create = " (k numeric PRIMARY KEY, n integer)";
+      execute(
+          connection,
+          "CREATE TABLE " + qualified(provider, source) + create,
+          "CREATE TABLE " + qualified(provider, target) + create,
+          "INSERT INTO " + qualified(provider, source) + " VALUES (-1e400, 1), (1, 1), (1e400, 1)",
+          "INSERT INTO " + qualified(provider, target)
+              + " VALUES ('-Infinity', 1), (1, 1), ('Infinity', 1)");
+      var compared = compare(provider, pairing(connection, provider, source, target));
+      assertEquals(new Tally(2, 2, 0, 1, 3, 3), compared.tally());
     }
   }
 
