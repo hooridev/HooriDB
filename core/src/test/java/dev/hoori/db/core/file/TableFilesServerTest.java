@@ -30,6 +30,7 @@ import dev.hoori.db.core.log.Sent;
 import dev.hoori.db.core.query.QueryException;
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.nio.channels.ClosedByInterruptException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -44,6 +45,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.io.TempDir;
@@ -294,6 +296,53 @@ class TableFilesServerTest {
         assertTrue(Thread.interrupted());
         assertFalse(committed.cancelled());
         assertEquals(new Inserts.Count(5, 5, 5, 0), committed.count());
+        assertEquals(List.of(1L, 2L, 3L, 4L, 5L), ids(connection, provider, table, columns));
+        assertLeftAsItWas(connection, provider);
+
+        // Cancelled once the last batch went, as a row after it that is skipped is read, which
+        // sends nothing: the commit has not begun, and the transaction is taken back.
+        var given = List.<Inserts.Row>of(
+            new Inserts.Row.Values(2, List.of("6", "f")),
+            new Inserts.Row.Values(3, List.of("7", "g")),
+            new Inserts.Row.Unreadable(4, "It has 1 value where 2 values come before"));
+        var next = new AtomicInteger();
+        var late = Inserts.write(
+            connection,
+            provider,
+            table,
+            columns,
+            List.of(0, 1),
+            () -> next.get() < given.size() ? given.get(next.getAndIncrement()) : null,
+            new Inserts.Options(false, 2, Inserts.Commit.ONCE, Inserts.OnError.SKIP),
+            false,
+            count -> Thread.currentThread().interrupt());
+        assertTrue(Thread.interrupted());
+        assertTrue(late.cancelled());
+        assertEquals(new Inserts.Count(3, 0, 0, 1), late.count());
+        assertEquals(List.of(1L, 2L, 3L, 4L, 5L), ids(connection, provider, table, columns));
+        assertLeftAsItWas(connection, provider);
+
+        // Cancelled as the file is read, whose channel the interrupt closes.
+        next.set(0);
+        var reading = Inserts.write(
+            connection,
+            provider,
+            table,
+            columns,
+            List.of(0, 1),
+            () -> {
+              if (next.get() < 2) {
+                return given.get(next.getAndIncrement());
+              }
+              Thread.currentThread().interrupt();
+              throw new ClosedByInterruptException();
+            },
+            new Inserts.Options(false, 1, Inserts.Commit.ONCE, Inserts.OnError.STOP),
+            false,
+            Inserts.Progress.NONE);
+        assertTrue(Thread.interrupted());
+        assertTrue(reading.cancelled());
+        assertEquals(new Inserts.Count(2, 0, 0, 0), reading.count());
         assertEquals(List.of(1L, 2L, 3L, 4L, 5L), ids(connection, provider, table, columns));
         assertLeftAsItWas(connection, provider);
       } finally {

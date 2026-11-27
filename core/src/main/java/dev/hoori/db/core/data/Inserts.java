@@ -9,6 +9,8 @@ import dev.hoori.db.core.log.Purpose;
 import dev.hoori.db.core.query.Query;
 import dev.hoori.db.core.query.QueryException;
 import java.io.IOException;
+import java.io.InterruptedIOException;
+import java.nio.channels.ClosedByInterruptException;
 import java.sql.Connection;
 import java.time.DateTimeException;
 import java.time.LocalDateTime;
@@ -182,12 +184,13 @@ public final class Inserts {
    * nothing else may run on it meanwhile.
    *
    * <p>The call blocks. An interrupt of the calling thread cancels the statement that runs, as
-   * {@link Query} does, and once the transaction it was in is rolled back the report says that it
-   * was cancelled, with what an earlier batch of {@link Commit#EACH_BATCH} committed, which stays;
-   * the thread is left interrupted. An interrupt as a transaction commits lets the commit end, so
-   * that the report counts it. Where the connection is given up as the cancel runs, the call ends
-   * with {@link QueryException.Failure#ABORTED}, and before the import began with {@link
-   * QueryException.Failure#CANCELLED}.
+   * {@link Query} does, or the reading of the source, and once the transaction it was in is rolled
+   * back the report says that it was cancelled, with what an earlier batch of {@link
+   * Commit#EACH_BATCH} committed, which stays; the thread is left interrupted. An interrupt once
+   * the source has given its last row and the rows are written, as the transaction commits, lets
+   * the commit end, so that the report counts it. Where the connection is given up as the cancel
+   * runs, the call ends with {@link QueryException.Failure#ABORTED}, and before the import began
+   * with {@link QueryException.Failure#CANCELLED}.
    *
    * @param columns all the table's columns, in their order, as {@link Rows#read} takes them
    * @param targets the indexes of the columns given values among them, in the order of a row's
@@ -264,7 +267,7 @@ public final class Inserts {
         e.addSuppressed(ended);
         throw e;
       }
-      if (e instanceof QueryException q && q.failure() == QueryException.Failure.CANCELLED) {
+      if (cancelled(e)) {
         return writing.cancelled();
       }
       throw e;
@@ -348,6 +351,10 @@ public final class Inserts {
           batch.clear();
           characters = 0;
         }
+      }
+      // A cancel as the last rows were read, of which none went: the commit has not begun.
+      if (Thread.currentThread().isInterrupted()) {
+        throw QueryException.of(QueryException.Failure.CANCELLED, "");
       }
       var stopped = batch.isEmpty() ? null : batch(batch, true);
       return stopped != null ? stop(stopped) : new Report(count(), failed, null, false);
@@ -507,6 +514,16 @@ public final class Inserts {
     private Count count() {
       return new Count(read, written, committed, failures);
     }
+  }
+
+  // Whether the failure is how a cancel ended a statement, or the reading of the source, whose
+  // channel an interrupt closes.
+  private static boolean cancelled(Exception e) {
+    return switch (e) {
+      case QueryException q -> q.failure() == QueryException.Failure.CANCELLED;
+      case ClosedByInterruptException _, InterruptedIOException _ -> true;
+      default -> false;
+    };
   }
 
   // Whether the failure is of the table or the connection rather than of a row: no other row
