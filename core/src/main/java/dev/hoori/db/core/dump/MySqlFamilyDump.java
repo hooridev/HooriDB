@@ -5,6 +5,7 @@ import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.data.Binary;
 import dev.hoori.db.core.query.QueryException;
+import dev.hoori.db.core.sql.Statements;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.sql.Connection;
@@ -24,8 +25,9 @@ import java.util.Set;
  * How MariaDB's and MySQL's objects are exported: their definitions as {@code SHOW CREATE} gives
  * them, on a session on their database, which names them without it; a table's foreign keys, and
  * the indexes that are no keys, taken out of its {@code CREATE TABLE} to be added later. What a
- * view needs is found by the names its definition quotes, which these servers do not otherwise
- * tell alike; a definer is left out, so that the user who reads the file back defines.
+ * view needs is found by the names its definition quotes where they name a table, view or function,
+ * which these servers do not otherwise tell alike; a definer is left out, so that the user who reads
+ * the file back defines.
  *
  * <p>The snapshot reads in UTC, and the file's session writes in it, so that a {@code timestamp}
  * comes back as the same moment; it reads the file with backslashes as escapes and a 0 as a value
@@ -229,9 +231,10 @@ public final class MySqlFamilyDump extends DumpDialect {
     return switch (item.kind()) {
       case TABLE -> {
         var created = withoutDatabase(
+            provider,
             shown(connection, provider, item, "SHOW CREATE TABLE " + qualified),
             provider.quote(item.container().name()));
-        var table = Created.of(created, name);
+        var table = Created.of(provider, created, name);
         var refers = new HashSet<Item>();
         for (var to : references.getOrDefault(item.name(), Set.of())) {
           var other = Item.of(item.container(), Item.Kind.TABLE, to);
@@ -263,7 +266,7 @@ public final class MySqlFamilyDump extends DumpDialect {
             List.of(),
             "DROP VIEW IF EXISTS " + name,
             List.of(),
-            quoted(provider, created, item, known),
+            viewNeeds(provider, created, item, known),
             Set.of());
       }
       case SEQUENCE -> {
@@ -348,10 +351,28 @@ public final class MySqlFamilyDump extends DumpDialect {
   /**
    * The table's definition without the name of its database where it names a sequence's next
    * value, as a column's default of MariaDB {@code nextval(`db`.`seq`)}, so that the table takes
-   * that of the database it is read into.
+   * that of the database it is read into; a text that holds the same stays as it is.
    */
-  static String withoutDatabase(String created, String database) {
-    return created.replace("nextval(" + database + ".", "nextval(");
+  static String withoutDatabase(Provider provider, String created, String database) {
+    var without = new StringBuilder();
+    var pieces = Statements.pieces(created, provider);
+    var from = 0;
+    for (var k = 0; k + 1 < pieces.size(); k++) {
+      var piece = pieces.get(k);
+      if (piece.kind() == Statements.Piece.Kind.QUOTED
+          && created.substring(piece.start(), piece.end()).equals(database)
+          && code(created, pieces.get(k + 1), '.')
+          && created.substring(0, piece.start()).toLowerCase(Locale.ROOT).endsWith("nextval(")) {
+        without.append(created, from, piece.start());
+        from = pieces.get(k + 1).end();
+      }
+    }
+    return without.append(created, from, created.length()).toString();
+  }
+
+  // Whether the piece is the one character of code.
+  private static boolean code(String text, Statements.Piece piece, char c) {
+    return piece.kind() == Statements.Piece.Kind.CODE && text.charAt(piece.start()) == c;
   }
 
   /** The definition without its {@code DEFINER=`user`@`host` }, where it has one. */
@@ -387,25 +408,71 @@ public final class MySqlFamilyDump extends DumpDialect {
     }
   }
 
-  // What a view needs: the tables, views and functions of its database whose quoted names it
-  // holds, a function's before a parenthesis; a column of the same name as one adds it in vain.
-  private static Set<Item> quoted(Provider provider, String created, Item item, Set<Item> known) {
-    var needs = new HashSet<Item>();
-    for (var other : known) {
-      if (other.equals(item)) {
+  /**
+   * What a view needs: the tables, views and functions of its database that it names, a function
+   * before a parenthesis. As these servers write a view, a name it reads from stands alone or after
+   * its database's: one before a period qualifies a column, one after another name or a closing
+   * parenthesis is an alias of what it reads, as one after {@code AS} is of a column, and a name in
+   * a text is none.
+   */
+  static Set<Item> viewNeeds(Provider provider, String created, Item item, Set<Item> known) {
+    var database = provider.quote(item.container().name());
+    var pieces = Statements.pieces(created, provider);
+    var tables = new HashSet<String>();
+    var functions = new HashSet<String>();
+    for (var k = 0; k < pieces.size(); k++) {
+      var piece = pieces.get(k);
+      if (piece.kind() != Statements.Piece.Kind.QUOTED) {
         continue;
       }
-      var name = provider.quote(other.name());
+      var next = k + 1 < pieces.size() ? pieces.get(k + 1) : null;
+      if (next != null && code(created, next, '.')) {
+        continue;
+      }
+      var before = k > 0 ? pieces.get(k - 1) : null;
+      if (before != null && code(created, before, '.')) {
+        var qualifier = k > 1 ? pieces.get(k - 2) : null;
+        if (qualifier == null
+            || qualifier.kind() != Statements.Piece.Kind.QUOTED
+            || !created.substring(qualifier.start(), qualifier.end()).equals(database)) {
+          continue;
+        }
+      } else if (before != null
+          && (before.kind() == Statements.Piece.Kind.QUOTED
+              || code(created, before, ')')
+              || afterAs(created, piece.start()))) {
+        continue;
+      }
+      var name = unquoted(created.substring(piece.start(), piece.end()));
+      (next != null && code(created, next, '(') ? functions : tables).add(name);
+    }
+    var needs = new HashSet<Item>();
+    for (var other : known) {
       var found = switch (other.kind()) {
-        case TABLE, VIEW -> created.contains(name);
-        case FUNCTION -> created.contains(name + "(");
+        case TABLE, VIEW -> tables.contains(other.name());
+        case FUNCTION -> functions.contains(other.name());
         default -> false;
       };
-      if (found) {
+      if (found && !other.equals(item)) {
         needs.add(other);
       }
     }
     return needs;
+  }
+
+  // Whether the code right before the offset ends in the word AS.
+  private static boolean afterAs(String text, int at) {
+    var before = text.substring(0, at).stripTrailing();
+    return before.length() >= 2
+        && before.regionMatches(true, before.length() - 2, "AS", 0, 2)
+        && (before.length() == 2
+            || !Character.isLetterOrDigit(before.charAt(before.length() - 3))
+                && before.charAt(before.length() - 3) != '_');
+  }
+
+  // A name quoted in backticks, as it is.
+  private static String unquoted(String quoted) {
+    return quoted.substring(1, quoted.length() - 1).replace("``", "`");
   }
 
   /**
@@ -416,27 +483,54 @@ public final class MySqlFamilyDump extends DumpDialect {
    */
   record Created(String create, List<String> indexes, List<String> keys) {
 
-    static Created of(String created, String name) {
-      var lines = created.split("\n", -1);
+    static Created of(Provider provider, String created, String name) {
+      // The parenthesis that holds the columns, keys and constraints, and the commas between them,
+      // outside names and texts.
+      var pieces = Statements.pieces(created, provider);
       var open = -1;
       var close = -1;
-      for (var i = 0; i < lines.length; i++) {
-        if (open < 0 && lines[i].endsWith("(")) {
-          open = i;
-        } else if (lines[i].startsWith(")")) {
-          close = i;
+      var commas = new ArrayList<Integer>();
+      var depth = 0;
+      for (var piece : pieces) {
+        if (piece.kind() != Statements.Piece.Kind.CODE) {
+          continue;
+        }
+        switch (created.charAt(piece.start())) {
+          case '(' -> {
+            if (depth++ == 0 && open < 0) {
+              open = piece.start();
+            }
+          }
+          case ')' -> {
+            if (--depth == 0 && close < 0 && open >= 0) {
+              close = piece.start();
+            }
+          }
+          case ',' -> {
+            if (depth == 1 && open >= 0 && close < 0) {
+              commas.add(piece.start());
+            }
+          }
+          default -> {
+            // Nothing that parts.
+          }
         }
       }
-      if (open < 0 || close < open) {
+      if (open < 0 || close < 0) {
         return new Created(created, List.of(), List.of());
       }
-      var inside = List.of(lines).subList(open + 1, close);
-      var counted = counted(inside);
+      var parts = new ArrayList<String>();
+      var from = open + 1;
+      for (var comma : commas) {
+        parts.add(created.substring(from, comma).strip());
+        from = comma + 1;
+      }
+      parts.add(created.substring(from, close).strip());
+      var counted = counted(parts);
       var kept = new ArrayList<String>();
       var indexes = new ArrayList<String>();
       var keys = new ArrayList<String>();
-      for (var line : inside) {
-        var part = withoutComma(line.strip());
+      for (var part : parts) {
         if (foreignKey(part)) {
           keys.add("ALTER TABLE " + name + " ADD " + part);
         } else if (index(part)
@@ -444,27 +538,20 @@ public final class MySqlFamilyDump extends DumpDialect {
             .isPresent()) {
           indexes.add("ALTER TABLE " + name + " ADD " + part);
         } else {
-          kept.add(withoutComma(line));
+          kept.add(part);
         }
       }
-      var create = new StringBuilder();
-      for (var i = 0; i <= open; i++) {
-        create.append(lines[i]).append('\n');
-      }
-      create.append(String.join(",\n", kept)).append('\n');
-      create.append(String.join("\n", List.of(lines).subList(close, lines.length)));
-      return new Created(create.toString(), List.copyOf(indexes), List.copyOf(keys));
+      return new Created(
+          created.substring(0, open + 1) + "\n  " + String.join(",\n  ", kept) + "\n"
+              + created.substring(close),
+          List.copyOf(indexes),
+          List.copyOf(keys));
     }
 
-    private static String withoutComma(String line) {
-      return line.endsWith(",") ? line.substring(0, line.length() - 1) : line;
-    }
-
-    // The AUTO_INCREMENT column's quoted name, or empty: a column's line, which begins with its
+    // The AUTO_INCREMENT column's quoted name, or empty: a column's part, which begins with its
     // name, says so before its comment.
-    private static String counted(List<String> lines) {
-      for (var line : lines) {
-        var part = line.strip();
+    private static String counted(List<String> parts) {
+      for (var part : parts) {
         var end = quotedEnd(part, 0);
         var comment = part.indexOf(" COMMENT '");
         var before = comment < 0 ? part : part.substring(0, comment);

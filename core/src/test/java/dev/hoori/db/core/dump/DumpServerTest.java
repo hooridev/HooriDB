@@ -775,7 +775,13 @@ class DumpServerTest {
             + " 0, '', NULL)",
         // A float of more digits than these servers write of one.
         "INSERT INTO typed (id, f) VALUES (3, 1.23456789)",
-        "INSERT INTO plain VALUES ('kept')"));
+        "INSERT INTO plain VALUES ('kept')",
+        // A view that reads one whose column has its name, which it does not need for that.
+        "CREATE VIEW z_alias AS SELECT id AS a_reader FROM parent",
+        "CREATE VIEW a_reader AS SELECT a_reader FROM z_alias",
+        // A name that breaks the line of SHOW CREATE TABLE.
+        "CREATE TABLE wrapped_names (`first\nsecond` integer, k integer, KEY by_k (k))",
+        "INSERT INTO wrapped_names VALUES (1, 2)"));
     if (provider == Provider.MARIADB) {
       statements.add("CREATE SEQUENCE counter START WITH 5");
       statements.add("SELECT NEXTVAL(counter), NEXTVAL(counter)");
