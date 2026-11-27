@@ -164,10 +164,10 @@ class ViewChangeTest {
   void aMaterializedViewIsDroppedCreatedAndRefreshedInOneTransaction() {
     var view = new Table(PUBLIC, "m", Table.Kind.MATERIALIZED);
     var change = ViewChange.replace(
-        Provider.POSTGRESQL,
-        read(view, "REFRESH MATERIALIZED VIEW \"public\".\"m\""),
-        "CREATE MATERIALIZED VIEW public.m AS SELECT 1\n  WITH NO DATA;\n"
-            + "CREATE UNIQUE INDEX i ON public.m USING btree (x);");
+        Provider.POSTGRESQL, read(view, "REFRESH MATERIALIZED VIEW \"public\".\"m\""), """
+        CREATE MATERIALIZED VIEW public.m AS SELECT 1
+          WITH NO DATA;
+        CREATE UNIQUE INDEX i ON public.m USING btree (x);""");
     assertEquals(ViewChange.Kind.RECREATE, change.kind());
     assertEquals(
         List.of(
@@ -181,10 +181,10 @@ class ViewChangeTest {
 
   @Test
   void aServerThatChangesNoDefinitionInATransactionIsNotAskedToDropAndCreate() {
-    var view = new Table(SHOP, "v", Table.Kind.VIEW);
+    var read = read(new Table(SHOP, "v", Table.Kind.VIEW));
     assertThrows(
         IllegalArgumentException.class,
-        () -> ViewChange.recreate(Provider.MARIADB, read(view), "CREATE VIEW v AS SELECT 1"));
+        () -> ViewChange.recreate(Provider.MARIADB, read, "CREATE VIEW v AS SELECT 1"));
   }
 
   @Test
@@ -225,9 +225,9 @@ class ViewChangeTest {
     assertEquals(
         List.of("REFRESH MATERIALIZED VIEW CONCURRENTLY \"public\".\"m\""),
         ViewChange.refresh(Provider.POSTGRESQL, kept, true).statements());
+    var plain = new Table(PUBLIC, "v", Table.Kind.VIEW);
     assertThrows(
         IllegalArgumentException.class,
-        () -> ViewChange.refresh(
-            Provider.POSTGRESQL, new Table(PUBLIC, "v", Table.Kind.VIEW), false));
+        () -> ViewChange.refresh(Provider.POSTGRESQL, plain, false));
   }
 }

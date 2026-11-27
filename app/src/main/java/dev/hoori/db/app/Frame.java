@@ -237,7 +237,7 @@ final class Frame {
           case TableTab x -> x.view(s, app);
           case ConsoleTab x -> x.view(s, app);
           case MonitorTab x -> x.view(s, app);
-          case ViewTab x -> x.view(s, app);
+          case ViewTab x -> x.content(s, app);
         });
   }
 
@@ -672,23 +672,30 @@ final class Frame {
         case ViewTab _ -> views++;
       }
     }
-    int n = consoles + tables + views;
-    String text;
-    if (consoles == n) {
-      text =
-          consoles + (consoles == 1 ? " console may" : " consoles may") + " hold uncommitted work";
-    } else if (tables == n) {
-      text = tables + (tables == 1 ? " table has" : " tables have") + " uncommitted changes";
-    } else if (views == n) {
-      text = views + (views == 1 ? " view has" : " views have") + " edits not saved";
-    } else {
-      text = n + " tabs may hold uncommitted work";
-    }
     var first = tabs.getFirst();
     boolean asking = modal || asks(s, s.tabs.groupOf((Tab) first));
     return StatusBar.item(
-            Badge.Kind.WARNING, Symbol.LOCK_OPEN, text, asking ? null : () -> first.show(s))
+            Badge.Kind.WARNING,
+            Symbol.LOCK_OPEN,
+            uncommitted(consoles, tables, views),
+            asking ? null : () -> first.show(s))
         .key("uncommitted");
+  }
+
+  /** What the consoles, tables and views that may hold uncommitted work say. */
+  private static String uncommitted(int consoles, int tables, int views) {
+    int n = consoles + tables + views;
+    if (consoles == n) {
+      return consoles + (consoles == 1 ? " console may" : " consoles may")
+          + " hold uncommitted work";
+    }
+    if (tables == n) {
+      return tables + (tables == 1 ? " table has" : " tables have") + " uncommitted changes";
+    }
+    if (views == n) {
+      return views + (views == 1 ? " view has" : " views have") + " edits not saved";
+    }
+    return n + " tabs may hold uncommitted work";
   }
 
   /** The version that runs, its authors, license and website. */

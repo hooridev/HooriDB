@@ -83,6 +83,14 @@ final class Suggestions {
     this.own = connection;
   }
 
+  // The connection it suggests for: its console's, its table tab's, or its own.
+  private UUID connectionFor() {
+    if (tab != null) {
+      return tab.id;
+    }
+    return grid != null ? grid.id : own;
+  }
+
   /**
    * The entries for the word before the caret, best first: made again only where the text, the
    * caret, the word or the keyword case changed since the last, or the list was closed meanwhile.
@@ -195,7 +203,7 @@ final class Suggestions {
       this.provider = provider;
       this.keywordCase = s.settings.keywordCase();
       this.exact = exact;
-      connection = tab != null ? tab.id : grid != null ? grid.id : own;
+      connection = connectionFor();
       var opened = connection == null ? null : s.catalog.live(connection);
       var connected = opened != null && opened.phase instanceof Live.Connected c ? c : null;
       this.live = connected == null ? null : opened;

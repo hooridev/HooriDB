@@ -159,22 +159,7 @@ public final class MySqlFamilyDefinitions extends DefinitionDialect {
     var known = new HashSet<Item>();
     var references = new HashMap<String, Set<String>>(); // a table's, by its name
     if (mode == Mode.EXPORT) {
-      for (var database :
-          items.stream().map(i -> i.container().database()).distinct().toList()) {
-        for (var listed : list(sql, database)) {
-          known.add(listed.item());
-        }
-        for (var reference : sql.rows(
-            """
-            SELECT TABLE_NAME, REFERENCED_TABLE_NAME
-            FROM information_schema.REFERENTIAL_CONSTRAINTS
-            WHERE CONSTRAINT_SCHEMA = ? AND UNIQUE_CONSTRAINT_SCHEMA = ?""",
-            rows -> List.of(rows.getString(1), rows.getString(2)),
-            database.name(),
-            database.name())) {
-          references.computeIfAbsent(reference.get(0), k -> new HashSet<>()).add(reference.get(1));
-        }
-      }
+      readExported(sql, items, known, references);
     } else {
       for (var item : items) {
         if (exists(sql, item)) {
@@ -191,6 +176,29 @@ public final class MySqlFamilyDefinitions extends DefinitionDialect {
       definitions.add(define(sql, item, mode, known, references));
     }
     return definitions;
+  }
+
+  // What an export knows of the items' databases: their objects, and the tables each table's
+  // foreign keys refer to, by its name.
+  private void readExported(
+      Sql sql, List<Item> items, Set<Item> known, Map<String, Set<String>> references)
+      throws QueryException {
+    for (var database :
+        items.stream().map(i -> i.container().database()).distinct().toList()) {
+      for (var listed : list(sql, database)) {
+        known.add(listed.item());
+      }
+      for (var reference : sql.rows(
+          """
+          SELECT TABLE_NAME, REFERENCED_TABLE_NAME
+          FROM information_schema.REFERENTIAL_CONSTRAINTS
+          WHERE CONSTRAINT_SCHEMA = ? AND UNIQUE_CONSTRAINT_SCHEMA = ?""",
+          rows -> List.of(rows.getString(1), rows.getString(2)),
+          database.name(),
+          database.name())) {
+        references.computeIfAbsent(reference.get(0), k -> new HashSet<>()).add(reference.get(1));
+      }
+    }
   }
 
   // Whether the object is there, as one of its kind; asked of it alone.

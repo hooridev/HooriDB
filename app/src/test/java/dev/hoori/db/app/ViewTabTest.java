@@ -36,10 +36,18 @@ class ViewTabTest {
 
   static final Schema PUBLIC = new Schema(new Database("shop", false), "public", false);
   static final String TOTALS = PG + "/shop.public.order_totals";
-  static final String CREATE =
-      "CREATE VIEW public.order_totals AS\nSELECT customer_id, sum(total) AS total\n"
-          + "FROM public.orders\nGROUP BY customer_id";
+  static final String CREATE = """
+      CREATE VIEW public.order_totals AS
+      SELECT customer_id, sum(total) AS total
+      FROM public.orders
+      GROUP BY customer_id""";
   static final String REPLACE = CREATE.replace("CREATE VIEW", "CREATE OR REPLACE VIEW");
+
+  // The materialized view's definition.
+  static final String RECENT = """
+      CREATE MATERIALIZED VIEW public.recent AS
+      SELECT id FROM public.orders
+        WITH NO DATA""";
 
   // A materialized view beside the view.
   static final String OUTLINE = CatalogTreeTest.PG_OUTLINE.replace(
@@ -65,8 +73,7 @@ class ViewTabTest {
             false)
         .view(
             PG + "/shop.public.recent",
-            List.of("CREATE MATERIALIZED VIEW public.recent AS\nSELECT id FROM public.orders\n"
-                + "  WITH NO DATA"),
+            List.of(RECENT),
             new References(
                 List.of(new Reference(PUBLIC, Reference.Kind.TABLE, "orders", "")), List.of()),
             true);
@@ -326,10 +333,16 @@ class ViewTabTest {
     c.run(app, "press role=button label=\"Cancel\"\nframe\nadvance 1\nframe\n");
     assertEquals(1, app.state().views(null).size(), "Cancel keeps the tab");
     assertTrue(tab(app).edited());
-    c.run(
-        app,
-        "key W control\nframe\nadvance 1\nframe\npress role=button label=\"Discard\"\nframe\n"
-            + "advance 1\nframe\n");
+    c.run(app, """
+        key W control
+        frame
+        advance 1
+        frame
+        press role=button label="Discard"
+        frame
+        advance 1
+        frame
+        """);
     assertEquals(List.of(), app.state().views(null), "Discarded, it closes");
   }
 

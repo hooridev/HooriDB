@@ -26,9 +26,11 @@ public final class PostgreSqlViews extends ViewDialect {
   private static final String PROC = "'pg_catalog.pg_proc'::pg_catalog.regclass";
   private static final String TYPE = "'pg_catalog.pg_type'::pg_catalog.regclass";
 
-  private static final Pattern HEAD = Pattern.compile("(?is)CREATE(?<replace>\\s+OR\\s+REPLACE)?"
-      + "(?:\\s+TEMP(?:ORARY)?)?(?:\\s+RECURSIVE)?\\s+(?<materialized>MATERIALIZED\\s+)?VIEW\\s+"
-      + "(?:IF\\s+NOT\\s+EXISTS\\s+)?");
+  // A statement that creates a view: CREATE and the options before the word VIEW, then that word.
+  private static final Pattern CREATE = Pattern.compile(
+      "(?is)CREATE(?<replace>\\s+OR\\s+REPLACE)?(?:\\s+TEMP(?:ORARY)?)?(?:\\s+RECURSIVE)?\\s+");
+  private static final Pattern VIEW_WORD = Pattern.compile(
+      "(?is)(?<materialized>MATERIALIZED\\s+)?VIEW\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?");
 
   public PostgreSqlViews() {
     // Nothing to set up.
@@ -226,8 +228,17 @@ public final class PostgreSqlViews extends ViewDialect {
   }
 
   @Override
-  Pattern head() {
-    return HEAD;
+  Optional<Head> head(String statement) {
+    var create = CREATE.matcher(statement);
+    if (!create.lookingAt()) {
+      return Optional.empty();
+    }
+    var view = VIEW_WORD.matcher(statement).region(create.end(), statement.length());
+    if (!view.lookingAt()) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        new Head(view.end(), create.group("replace") != null, view.group("materialized") != null));
   }
 
   @Override

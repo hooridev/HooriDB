@@ -24,14 +24,27 @@ import java.util.regex.Pattern;
  */
 public final class MySqlFamilyViews extends ViewDialect {
 
-  // A name in backticks, single or double quotes, or bare, as a definer's user and host are.
-  private static final String NAME = "(?:`(?:[^`]|``)*`|'(?:[^'\\\\]|\\\\.|'')*'"
-      + "|\"(?:[^\"\\\\]|\\\\.|\"\")*\"|[^\\s@`'\"=]+)";
-  private static final String USER =
-      "(?:CURRENT_USER(?:\\s*\\(\\s*\\))?|" + NAME + "(?:\\s*@\\s*" + NAME + ")?)";
-  private static final Pattern HEAD = Pattern.compile("(?is)CREATE(?<replace>\\s+OR\\s+REPLACE)?"
-      + "(?:\\s+(?:ALGORITHM\\s*=\\s*\\w+|DEFINER\\s*=\\s*" + USER + "|SQL\\s+SECURITY\\s+\\w+))*"
-      + "\\s+VIEW\\s+");
+  // The head of a statement that creates a view: CREATE, its options, each after white space and
+  // followed by it, and the word VIEW.
+  private static final Pattern CREATE =
+      Pattern.compile("(?is)CREATE(?<replace>\\s+OR\\s+REPLACE)?");
+  private static final Pattern ALGORITHM =
+      Pattern.compile("(?is)\\s+ALGORITHM\\s*=\\s*\\w+(?=\\s)");
+  private static final Pattern SECURITY =
+      Pattern.compile("(?is)\\s+SQL\\s+SECURITY\\s+\\w+(?=\\s)");
+  private static final Pattern DEFINER = Pattern.compile("(?is)\\s+DEFINER\\s*=\\s*");
+  private static final Pattern VIEW = Pattern.compile("(?is)\\s+VIEW\\s+");
+
+  // A definer's user: the current one, but where a host follows, as a name then takes it; else a
+  // name, and a host after an at sign. A name is in backticks, single or double quotes, or bare.
+  private static final Pattern CURRENT_USER =
+      Pattern.compile("(?i)CURRENT_USER(?:\\s*\\(\\s*\\))?(?!\\s*@)(?=\\s)");
+  private static final Pattern AT = Pattern.compile("\\s*@\\s*");
+  private static final List<Pattern> NAMES = List.of(
+      Pattern.compile("(?s)`(?:[^`]|``)*`"),
+      Pattern.compile("(?s)'(?:[^'\\\\]|\\\\.|'')*'"),
+      Pattern.compile("(?s)\"(?:[^\"\\\\]|\\\\.|\"\")*\""),
+      Pattern.compile("[^\\s@`'\"=]+"));
 
   // The databases that are the server's own, whose objects no view of the user's is about.
   private static final Set<String> SYSTEM =
@@ -58,43 +71,7 @@ public final class MySqlFamilyViews extends ViewDialect {
     var databases = new LinkedHashSet<String>();
     named.forEach(n -> databases.add(n.database()));
     databases.removeAll(SYSTEM);
-    var uses = new ArrayList<Reference>();
-    if (!databases.isEmpty()) {
-      var in = String.join(", ", Collections.nCopies(databases.size(), "?"));
-      var parameters = databases.toArray(String[]::new);
-      uses.addAll(sql.some(
-          """
-          SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES
-          WHERE TABLE_SCHEMA IN (%s) ORDER BY TABLE_SCHEMA, TABLE_NAME""".formatted(in),
-          rows -> {
-            var database = rows.getString(1);
-            var name = rows.getString(2);
-            var found = new Named(database, name, false);
-            return named.contains(found) && !(database.equals(on) && name.equals(view.name()))
-                ? relation(rows.getString(3))
-                    .map(kind -> new Reference(new Database(database, false), kind, name, ""))
-                : Optional.<Reference>empty();
-          },
-          parameters));
-      uses.addAll(sql.some(
-          """
-          SELECT ROUTINE_SCHEMA, ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES
-          WHERE ROUTINE_SCHEMA IN (%s) ORDER BY ROUTINE_SCHEMA, ROUTINE_NAME""".formatted(in),
-          rows -> {
-            var database = rows.getString(1);
-            var name = rows.getString(2);
-            return named.contains(new Named(database, name, true))
-                ? Optional.of(new Reference(
-                    new Database(database, false),
-                    rows.getString(3).equalsIgnoreCase("PROCEDURE")
-                        ? Reference.Kind.PROCEDURE
-                        : Reference.Kind.FUNCTION,
-                    name,
-                    ""))
-                : Optional.<Reference>empty();
-          },
-          parameters));
-    }
+    var uses = databases.isEmpty() ? List.<Reference>of() : uses(sql, view, named, databases);
     // Compared as bytes, as the names are, whatever the collation of information_schema.
     var usedBy = sql.rows(
         """
@@ -110,6 +87,47 @@ public final class MySqlFamilyViews extends ViewDialect {
         on,
         view.name());
     return new References(uses, usedBy);
+  }
+
+  // The tables, views and routines of the databases that the definition names.
+  private static List<Reference> uses(Sql sql, Table view, Set<Named> named, Set<String> databases)
+      throws QueryException {
+    var on = view.container().database().name();
+    var uses = new ArrayList<Reference>();
+    var in = String.join(", ", Collections.nCopies(databases.size(), "?"));
+    var parameters = databases.toArray(String[]::new);
+    uses.addAll(sql.some(
+        """
+        SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA IN (%s) ORDER BY TABLE_SCHEMA, TABLE_NAME""".formatted(in),
+        rows -> {
+          var database = rows.getString(1);
+          var name = rows.getString(2);
+          var found = new Named(database, name, false);
+          return named.contains(found) && !(database.equals(on) && name.equals(view.name()))
+              ? relation(rows.getString(3))
+                  .map(kind -> new Reference(new Database(database, false), kind, name, ""))
+              : Optional.<Reference>empty();
+        },
+        parameters));
+    uses.addAll(sql.some(
+        """
+        SELECT ROUTINE_SCHEMA, ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES
+        WHERE ROUTINE_SCHEMA IN (%s) ORDER BY ROUTINE_SCHEMA, ROUTINE_NAME""".formatted(in),
+        rows -> {
+          var database = rows.getString(1);
+          var name = rows.getString(2);
+          return named.contains(new Named(database, name, true))
+              ? Optional.of(new Reference(
+                  new Database(database, false), routineKind(rows.getString(3)), name, ""))
+              : Optional.<Reference>empty();
+        },
+        parameters));
+    return uses;
+  }
+
+  private static Reference.Kind routineKind(String type) {
+    return type.equalsIgnoreCase("PROCEDURE") ? Reference.Kind.PROCEDURE : Reference.Kind.FUNCTION;
   }
 
   // An object a definition names with its database, a routine by a parenthesis after it.
@@ -205,8 +223,64 @@ public final class MySqlFamilyViews extends ViewDialect {
   }
 
   @Override
-  Pattern head() {
-    return HEAD;
+  Optional<Head> head(String statement) {
+    var create = CREATE.matcher(statement);
+    if (!create.lookingAt()) {
+      return Optional.empty();
+    }
+    var at = create.end();
+    for (var next = option(statement, at); next >= 0; next = option(statement, at)) {
+      at = next;
+    }
+    var end = matchAt(VIEW, statement, at);
+    return end < 0
+        ? Optional.empty()
+        : Optional.of(new Head(end, create.group("replace") != null, false));
+  }
+
+  // Where the option before VIEW that begins at the offset ends, or -1 where none does.
+  private static int option(String statement, int at) {
+    for (var option : List.of(ALGORITHM, SECURITY)) {
+      var end = matchAt(option, statement, at);
+      if (end >= 0) {
+        return end;
+      }
+    }
+    var user = matchAt(DEFINER, statement, at);
+    return user < 0 ? -1 : user(statement, user);
+  }
+
+  // Where a definer's user that begins at the offset ends before white space, or -1.
+  private static int user(String statement, int at) {
+    var current = matchAt(CURRENT_USER, statement, at);
+    if (current >= 0) {
+      return current;
+    }
+    var name = name(statement, at);
+    if (name < 0) {
+      return -1;
+    }
+    var host = matchAt(AT, statement, name);
+    var end = host < 0 ? -1 : name(statement, host);
+    if (end >= 0 && spaceAt(statement, end)) {
+      return end;
+    }
+    return spaceAt(statement, name) ? name : -1;
+  }
+
+  // Where the name that begins at the offset ends, or -1.
+  private static int name(String statement, int at) {
+    for (var name : NAMES) {
+      var end = matchAt(name, statement, at);
+      if (end >= 0) {
+        return end;
+      }
+    }
+    return -1;
+  }
+
+  private static boolean spaceAt(String statement, int at) {
+    return at < statement.length() && Character.isWhitespace(statement.charAt(at));
   }
 
   @Override

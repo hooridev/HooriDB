@@ -1373,23 +1373,37 @@ final class State {
     if (profile == null || profile.provider().keepsDocuments()) {
       return;
     }
-    for (var each : tabs.groups()) {
-      for (int i = 0; i < each.tabs().size(); i++) {
-        if (each.tabs().get(i) instanceof ViewTab x && x.id.equals(id) && x.of(view)) {
-          tabs.select(each, i);
-          var window = each.window() != null ? each.window() : app.windows().of(app);
-          if (window != null) {
-            window.raise();
-          }
-          x.then(this, then);
-          return;
-        }
-      }
+    var shown = showView(id, view);
+    if (shown != null) {
+      shown.then(this, then);
+      return;
     }
     var tab = ViewTab.of(id, view);
     tabs.add(into, into.tabs().size(), tab);
     tab.then(this, then);
     tab.open(this);
+  }
+
+  // Selects the view's open tab, raising its window; the tab, or null where none is open.
+  private ViewTab showView(UUID id, Table view) {
+    for (var each : tabs.groups()) {
+      for (int i = 0; i < each.tabs().size(); i++) {
+        if (each.tabs().get(i) instanceof ViewTab x && x.id.equals(id) && x.of(view)) {
+          tabs.select(each, i);
+          raise(each);
+          return x;
+        }
+      }
+    }
+    return null;
+  }
+
+  // Raises the window of the tabs, or the main window where they are in it.
+  private void raise(TabGroups.Group<Tab> group) {
+    var window = group.window() != null ? group.window() : app.windows().of(app);
+    if (window != null) {
+      window.raise();
+    }
   }
 
   /**
@@ -1419,7 +1433,7 @@ final class State {
           .orElse(new Schema(database, "public", false));
     }
     var group = tabs.main().active();
-    tabs.add(group, group.tabs().size(), ViewTab.creating(id, into));
+    tabs.add(group, group.tabs().size(), ViewTab.forNew(id, into));
   }
 
   /** Closes the view's tab, as after its drop. */

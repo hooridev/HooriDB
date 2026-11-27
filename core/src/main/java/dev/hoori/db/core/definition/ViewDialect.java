@@ -7,7 +7,6 @@ import dev.hoori.db.core.query.QueryException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -75,10 +74,25 @@ public abstract sealed class ViewDialect permits MySqlFamilyViews, PostgreSqlVie
 
   /**
    * What a statement that creates a view begins with, up to its name: {@code CREATE}, {@code OR
-   * REPLACE} in a group {@code replace} where it has it, the options before {@code VIEW} and, in a
-   * group {@code materialized}, the word that makes the view keep its rows.
+   * REPLACE} where it has it, the options before {@code VIEW} and the word that makes the view
+   * keep its rows; empty where the statement creates no view.
    */
-  abstract Pattern head();
+  abstract Optional<Head> head(String statement);
+
+  /**
+   * The head of a statement that creates a view, from its start.
+   *
+   * @param end where the view's name begins
+   * @param replaces whether it has {@code OR REPLACE}
+   * @param materialized whether the view keeps its rows
+   */
+  record Head(int end, boolean replaces, boolean materialized) {}
+
+  // Where the pattern matches from the offset on, or -1 where it does not.
+  static int matchAt(Pattern pattern, String text, int at) {
+    var matcher = pattern.matcher(text).region(at, text.length());
+    return matcher.lookingAt() ? matcher.end() : -1;
+  }
 
   /** The part of a name, quoted as the provider quotes one, as it names an object. */
   abstract String unquoted(String part);
@@ -97,11 +111,11 @@ public abstract sealed class ViewDialect permits MySqlFamilyViews, PostgreSqlVie
    * or creates a view that keeps its rows, which nothing replaces in place.
    */
   public String orReplace(String statement) {
-    var head = head().matcher(statement);
-    if (!head.lookingAt() || head.group("replace") != null || group(head, "materialized") != null) {
+    var head = head(statement);
+    if (head.isEmpty() || head.get().replaces() || head.get().materialized()) {
       return statement;
     }
-    var at = head.start() + "CREATE".length();
+    var at = "CREATE".length();
     return statement.substring(0, at) + " OR REPLACE" + statement.substring(at);
   }
 
@@ -110,14 +124,14 @@ public abstract sealed class ViewDialect permits MySqlFamilyViews, PostgreSqlVie
    * [schema, view]}; empty where it creates none.
    */
   public Optional<List<String>> creates(Provider provider, String statement) {
-    var head = head().matcher(statement);
-    if (!head.lookingAt()) {
+    var head = head(statement);
+    if (head.isEmpty()) {
       return Optional.empty();
     }
     var part = Pattern.compile(quoted(provider) + "|" + BARE).matcher(statement);
     var dot = Pattern.compile("\\s*\\.\\s*").matcher(statement);
     var parts = new ArrayList<String>();
-    var at = head.end();
+    var at = head.get().end();
     while (part.region(at, statement.length()).lookingAt()) {
       var word = part.group();
       parts.add(word.matches(BARE) ? bare(word) : unquoted(word));
@@ -165,13 +179,5 @@ public abstract sealed class ViewDialect permits MySqlFamilyViews, PostgreSqlVie
   private static String quoted(Provider provider) {
     var quote = provider.quote("").substring(0, 1);
     return quote + "(?:[^" + quote + "]|" + quote + quote + ")*" + quote;
-  }
-
-  private static String group(Matcher matcher, String name) {
-    try {
-      return matcher.group(name);
-    } catch (IllegalArgumentException _) {
-      return null; // a head without it
-    }
   }
 }

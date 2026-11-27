@@ -94,7 +94,7 @@ final class ViewTab implements Tab, Guard.Guarded {
   String name = ""; // a new view's name
   String text = "";
   private String original = ""; // the text as read; a new view's is empty
-  ViewDefinition read; // null until read
+  ViewDefinition definition; // null until read
   boolean editing; // whether the editor takes edits
   boolean concurrently = true; // a refresh's choice, where the view allows it
   final CodeEditor.State editor = new CodeEditor.State().readOnly(true);
@@ -102,18 +102,18 @@ final class ViewTab implements Tab, Guard.Guarded {
   private final Completion.State completion = new Completion.State().openAfter(".");
   private final Suggestions suggestions;
   final Menu.State containers = new Menu.State();
-  Split.Position split = SPLIT;
+  Split.Position split = INITIAL_SPLIT;
   Lane.Asked reading; // the definition being read, or null
   Lane.Asked changing; // the change under way, or null
   private ViewChange running; // what changing runs, or null
   Problem problem; // why the last read or change failed, until the next or a dismiss
   Preview asked; // the statements shown before they run, or null
-  Then then = Then.NOTHING;
+  Then afterRead = Then.NOTHING;
   String said; // what the status line says for a while, or null
   private int says;
   private boolean closed;
 
-  static final Split.Position SPLIT = Split.Position.second(260);
+  static final Split.Position INITIAL_SPLIT = Split.Position.second(260);
 
   private ViewTab(UUID id, Table view, Container container, boolean creating) {
     this.id = id;
@@ -133,7 +133,7 @@ final class ViewTab implements Tab, Guard.Guarded {
   }
 
   /** The tab of a new view in the schema or database, which Save creates. */
-  static ViewTab creating(UUID id, Container container) {
+  static ViewTab forNew(UUID id, Container container) {
     return new ViewTab(id, null, container, true);
   }
 
@@ -147,7 +147,7 @@ final class ViewTab implements Tab, Guard.Guarded {
 
   /** The tree's connection connected again: what was not read yet is read. */
   void connected(State s) {
-    if (read == null && reading == null) {
+    if (definition == null && reading == null) {
       open(s);
     }
   }
@@ -224,21 +224,21 @@ final class ViewTab implements Tab, Guard.Guarded {
         },
         e -> {
           reading = null;
-          then = Then.NOTHING;
+          afterRead = Then.NOTHING;
           problem = new Problem("The definition could not be read", words(s, e));
         });
   }
 
   private void shown(State s, ViewDefinition got) {
-    read = got;
+    definition = got;
     view = got.view();
     text = laidOut(got.text(), provider(s));
     original = text;
     editing = false;
     editor.readOnly(true);
     concurrently = got.concurrently();
-    var next = then;
-    then = Then.NOTHING;
+    var next = afterRead;
+    afterRead = Then.NOTHING;
     switch (next) {
       case DROP -> askDrop(s);
       case REFRESH -> askRefresh(s);
@@ -263,7 +263,7 @@ final class ViewTab implements Tab, Guard.Guarded {
 
   /** What the tree's menu asks once the definition is read, at once where it is. */
   void then(State s, Then next) {
-    if (read != null && !busy()) {
+    if (definition != null && !busy()) {
       switch (next) {
         case DROP -> askDrop(s);
         case REFRESH -> askRefresh(s);
@@ -272,7 +272,7 @@ final class ViewTab implements Tab, Guard.Guarded {
         }
       }
     } else {
-      then = next;
+      afterRead = next;
     }
   }
 
@@ -294,7 +294,7 @@ final class ViewTab implements Tab, Guard.Guarded {
     if (busy()) {
       return "Wait for what runs";
     }
-    if (!creating && read == null) {
+    if (!creating && definition == null) {
       return "Read the definition first";
     }
     return null;
@@ -333,7 +333,7 @@ final class ViewTab implements Tab, Guard.Guarded {
     try {
       var change = creating
           ? ViewChange.create(provider, container, name.strip(), text)
-          : ViewChange.replace(provider, read, text);
+          : ViewChange.replace(provider, definition, text);
       problem = null;
       asked = new Preview(change, null);
     } catch (ViewChange.OtherView other) {
@@ -368,15 +368,15 @@ final class ViewTab implements Tab, Guard.Guarded {
   /** Refresh of a materialized view's rows, concurrently where it can and that is chosen. */
   void askRefresh(State s) {
     var provider = provider(s);
-    if (provider == null || creating || changeOff(s) != null || !read.materialized()) {
+    if (provider == null || creating || changeOff(s) != null || !definition.materialized()) {
       return;
     }
-    asked =
-        new Preview(ViewChange.refresh(provider, view, concurrently && read.concurrently()), null);
+    asked = new Preview(
+        ViewChange.refresh(provider, view, concurrently && definition.concurrently()), null);
   }
 
   /** The refresh's choice changed, which the statement shown follows. */
-  void concurrently(State s, boolean on) {
+  void chooseConcurrently(State s, boolean on) {
     concurrently = on;
     if (asked != null && asked.change().kind() == ViewChange.Kind.REFRESH) {
       askRefresh(s);
@@ -472,19 +472,23 @@ final class ViewTab implements Tab, Guard.Guarded {
   // the server does that in one transaction.
   private void kept(State s, String words) {
     var provider = provider(s);
-    var usedBy = read.references().usedBy();
+    var usedBy = definition.references().usedBy();
     if (provider != null && provider.dialect().views().changesInTransaction() && usedBy.isEmpty()) {
-      asked = new Preview(ViewChange.recreate(provider, read, text), words(s, words));
+      asked = new Preview(ViewChange.recreate(provider, definition, text), words(s, words));
       return;
     }
     problem = new Problem(
-        "The view's columns cannot change in place",
-        words(s, words)
-            + (usedBy.isEmpty()
-                ? ""
-                : "\n\n" + names(usedBy) + (usedBy.size() == 1 ? " uses" : " use")
-                    + " it, which a drop would take: change the view so that its columns stay,"
-                    + " or drop what uses it first."));
+        "The view's columns cannot change in place", words(s, words) + takenByDrop(usedBy));
+  }
+
+  // What uses the view, which a drop would take; empty where nothing does.
+  private static String takenByDrop(List<Reference> usedBy) {
+    if (usedBy.isEmpty()) {
+      return "";
+    }
+    return "\n\n" + names(usedBy) + (usedBy.size() == 1 ? " uses" : " use")
+        + " it, which a drop would take: change the view so that its columns stay,"
+        + " or drop what uses it first.";
   }
 
   private void done(State s, ViewChange change) {
@@ -588,7 +592,7 @@ final class ViewTab implements Tab, Guard.Guarded {
   }
 
   /** The tab's content: its toolbar, why something failed, the editor beside what it uses. */
-  El view(State s, App<State> app) {
+  El content(State s, App<State> app) {
     Theme t = Theme.CURRENT.get();
     var provider = provider(s);
     var off = changeOff(s);
@@ -608,14 +612,14 @@ final class ViewTab implements Tab, Guard.Guarded {
                   button(SECONDARY, "Dismiss", () -> problem = null))
               .key("problem")));
     }
-    El code = editor(s, app, provider, off);
+    El code = editor(s, app, provider);
     if (creating) {
       content.child(code.grow(1));
     } else {
       content.child(Split.split(
               Split.Direction.ROW,
               split,
-              SPLIT,
+              INITIAL_SPLIT,
               p -> split = p,
               code,
               8 * t.size().control(),
@@ -641,6 +645,26 @@ final class ViewTab implements Tab, Guard.Guarded {
   }
 
   private List<El> actions(State s, Theme t, String off) {
+    var actions = new ArrayList<El>(editing(s, t, off));
+    actions.add(gated(
+        button(
+                PRIMARY,
+                "Save…",
+                saves(s) ? () -> save(s) : null,
+                Button.options()
+                    .icon(Symbol.SAVE)
+                    .state(changing != null ? Button.State.BUSY : Button.State.READY))
+            .key("save"),
+        off));
+    if (!creating) {
+      actions.add(Card.spacer());
+      actions.addAll(changes(s, off));
+    }
+    return actions;
+  }
+
+  // A new view's schema and name, else Edit, or Revert while editing.
+  private List<El> editing(State s, Theme t, String off) {
     var actions = new ArrayList<El>();
     if (creating) {
       var choices = choices(s);
@@ -672,20 +696,12 @@ final class ViewTab implements Tab, Guard.Guarded {
               Button.options().icon(Symbol.ARROW_UNDO))
           .key("revert"));
     }
-    actions.add(gated(
-        button(
-                PRIMARY,
-                "Save…",
-                saves(s) ? () -> save(s) : null,
-                Button.options()
-                    .icon(Symbol.SAVE)
-                    .state(changing != null ? Button.State.BUSY : Button.State.READY))
-            .key("save"),
-        off));
-    if (creating) {
-      return actions;
-    }
-    actions.add(Card.spacer());
+    return actions;
+  }
+
+  // What an existing view has: Refresh rows… of a materialized one, Drop… and Reload.
+  private List<El> changes(State s, String off) {
+    var actions = new ArrayList<El>();
     if (view.kind() == Table.Kind.MATERIALIZED) {
       actions.add(gated(
           button(
@@ -735,7 +751,7 @@ final class ViewTab implements Tab, Guard.Guarded {
     return schemas.contains(container) ? schemas : List.of(container);
   }
 
-  private El editor(State s, App<State> app, Provider provider, String off) {
+  private El editor(State s, App<State> app, Provider provider) {
     Theme t = Theme.CURRENT.get();
     editor.occurrences(s.settings.highlightOccurrences());
     El code = CodeEditor.codeEditor(
@@ -758,7 +774,7 @@ final class ViewTab implements Tab, Guard.Guarded {
       completion.close();
     }
     El embedded = CodeEditor.embedded(code).grow(1).wFull();
-    if (reading != null && read == null) {
+    if (reading != null && definition == null) {
       return col()
           .grow(1)
           .center()
@@ -800,24 +816,9 @@ final class ViewTab implements Tab, Guard.Guarded {
   private El references(State s, Theme t) {
     var entries = new ArrayList<NavList.Entry>();
     var opened = new ArrayList<Reference>();
-    var references = read == null ? null : read.references();
-    for (var part : List.of(true, false)) {
-      entries.add(NavList.heading(part ? "Uses" : "Used by"));
-      opened.add(null);
-      var shown = references == null
-          ? List.<Reference>of()
-          : part ? references.uses() : references.usedBy();
-      if (shown.isEmpty()) {
-        entries.add(NavList.item(references == null ? "…" : "Nothing").disabled(true));
-        opened.add(null);
-      }
-      for (var reference : shown) {
-        entries.add(NavList.item(symbol(reference), reference.shown())
-            .detail(reference.container().name())
-            .disabled(reference.table().isEmpty()));
-        opened.add(reference);
-      }
-    }
+    var references = definition == null ? null : definition.references();
+    addPart(entries, opened, "Uses", references == null ? null : references.uses());
+    addPart(entries, opened, "Used by", references == null ? null : references.usedBy());
     El list = NavList.navList(entries, -1, i -> {
           if (i >= 0 && i < opened.size() && opened.get(i) != null) {
             open(s, opened.get(i));
@@ -826,6 +827,24 @@ final class ViewTab implements Tab, Guard.Guarded {
         .key("references")
         .label("What it uses and what uses it");
     return col().grow(1).minSize(0, 0).padding(t.space().s()).child(list);
+  }
+
+  // A part's heading and its references, each with what a press opens; null while not read.
+  private static void addPart(
+      List<NavList.Entry> entries, List<Reference> opened, String heading, List<Reference> shown) {
+    entries.add(NavList.heading(heading));
+    opened.add(null);
+    if (shown == null || shown.isEmpty()) {
+      entries.add(NavList.item(shown == null ? "…" : "Nothing").disabled(true));
+      opened.add(null);
+      return;
+    }
+    for (var reference : shown) {
+      entries.add(NavList.item(symbol(reference), reference.shown())
+          .detail(reference.container().name())
+          .disabled(reference.table().isEmpty()));
+      opened.add(reference);
+    }
   }
 
   private static Icon symbol(Reference reference) {
@@ -840,7 +859,7 @@ final class ViewTab implements Tab, Guard.Guarded {
       words = "Reading the definition…";
     } else if (creating) {
       words = "Save shows the CREATE VIEW before it runs";
-    } else if (read == null) {
+    } else if (definition == null) {
       words = "";
     } else if (!editing) {
       words = changeOff(s) == null ? "Read-only: Edit to change it" : "Read-only";
@@ -868,7 +887,7 @@ final class ViewTab implements Tab, Guard.Guarded {
           .child(
               button(SECONDARY, ConsoleTab.CANCEL_BUTTON, () -> cancel(s)).key("cancel-change")));
     }
-    if (read != null && read.materialized() && !read.concurrently()) {
+    if (definition != null && definition.materialized() && !definition.concurrently()) {
       end.add(Label.label(Label.Variant.MUTED, "Refreshes only as a whole").key("refreshes"));
     }
     return end.toArray(El[]::new);
@@ -889,18 +908,18 @@ final class ViewTab implements Tab, Guard.Guarded {
                 app, sql, previewEditor, provider == null ? null : Syntax.of(provider), null)
             .key("view-sql")
             .label("SQL preview"))
-        .h(Math.min(12, Math.max(3, lines + 1)) * t.size().control())
+        .h(Math.clamp(lines + 1, 3, 12) * t.size().control())
         .wFull();
     El content = col()
         .w(2 * ConnectionDialog.width())
         .gap(t.space().m())
         .child(Label.label(summary(s, preview)).wrapText().key("view-summary"));
     if (change.kind() == ViewChange.Kind.REFRESH) {
-      boolean can = read != null && read.concurrently();
+      boolean can = definition != null && definition.concurrently();
       El box = Checkbox.checkbox(
               can && concurrently,
               "Concurrently, without keeping others from reading it",
-              can ? () -> concurrently(s, !concurrently) : null)
+              can ? () -> chooseConcurrently(s, !concurrently) : null)
           .key("concurrently");
       content.child(
           can
@@ -945,14 +964,10 @@ final class ViewTab implements Tab, Guard.Guarded {
         "Replaces the definition of " + named + " in place" + all
             + ": privileges granted on it stay.";
       case RECREATE ->
-        (preview.refused() == null
-                ? ""
-                : (provider == null ? "The server" : provider.displayName())
-                    + " cannot change the view's columns in place: " + preview.refused()
-                    + "\n\n")
+        cannotInPlace(provider, preview)
             + "Drops " + named + " and creates it anew" + all
             + (change.view().kind() == Table.Kind.MATERIALIZED ? ", with its rows read anew" : "")
-            + (read == null || read.restore().isEmpty()
+            + (definition == null || definition.restore().isEmpty()
                 ? ""
                 : ", and gives it back its owner, triggers and rules")
             + ": privileges granted on it and on its columns are lost, and must be granted again.";
@@ -966,10 +981,20 @@ final class ViewTab implements Tab, Guard.Guarded {
     };
   }
 
+  // Why the server cannot change the view in place, where it refused; else empty.
+  private static String cannotInPlace(Provider provider, Preview preview) {
+    if (preview.refused() == null) {
+      return "";
+    }
+    var server = provider == null ? "The server" : provider.displayName();
+    return server + " cannot change the view's columns in place: " + preview.refused() + "\n\n";
+  }
+
   // What uses the view as read, which a server that can refuses its drop for, naming what then
   // depends on it, and another leaves without it.
   private String dependents(Provider provider) {
-    var usedBy = read == null ? List.<Reference>of() : read.references().usedBy();
+    var usedBy =
+        definition == null ? List.<Reference>of() : definition.references().usedBy();
     if (usedBy.isEmpty()) {
       return "";
     }

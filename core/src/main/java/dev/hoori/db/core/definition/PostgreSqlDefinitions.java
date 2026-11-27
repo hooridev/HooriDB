@@ -793,6 +793,31 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
               rows.getBoolean(5),
               rows.getString(6)));
       var materialized = view.kind().equals("m");
+      var statements = new ArrayList<String>();
+      statements.add(createView(view, materialized));
+      var kind = materialized ? "MATERIALIZED VIEW " : "VIEW ";
+      if (view.comment() != null) {
+        statements.add("COMMENT ON " + kind + name + " IS " + literal(view.comment()));
+      }
+      statements.addAll(columnStatements());
+      return new Definition(
+          item,
+          statements,
+          false,
+          materialized ? indexes() : List.of(),
+          List.of(),
+          List.of(),
+          "DROP " + kind + "IF EXISTS " + name,
+          materialized && view.populated()
+              ? List.of("REFRESH MATERIALIZED VIEW " + name)
+              : List.of(),
+          List.of(),
+          needs(CLASS),
+          Set.of());
+    }
+
+    // The CREATE of the view, a materialized one without its rows.
+    private String createView(View view, boolean materialized) throws QueryException {
       var edit = mode == Mode.EDIT;
       var create = new StringBuilder(materialized ? "CREATE MATERIALIZED VIEW " : "CREATE VIEW ")
           .append(name);
@@ -809,12 +834,12 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
       if (materialized) {
         create.append("\n  WITH NO DATA");
       }
+      return create.toString();
+    }
+
+    // The comments and defaults of the view's columns.
+    private List<String> columnStatements() throws QueryException {
       var statements = new ArrayList<String>();
-      statements.add(create.toString());
-      var kind = materialized ? "MATERIALIZED VIEW " : "VIEW ";
-      if (view.comment() != null) {
-        statements.add("COMMENT ON " + kind + name + " IS " + literal(view.comment()));
-      }
       for (var column : viewColumns()) {
         var named = name + "." + quote(column.name());
         if (column.comment() != null) {
@@ -825,20 +850,7 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
               + " SET DEFAULT " + column.fallback());
         }
       }
-      return new Definition(
-          item,
-          statements,
-          false,
-          materialized ? indexes() : List.of(),
-          List.of(),
-          List.of(),
-          "DROP " + kind + "IF EXISTS " + name,
-          materialized && view.populated()
-              ? List.of("REFRESH MATERIALIZED VIEW " + name)
-              : List.of(),
-          List.of(),
-          needs(CLASS),
-          Set.of());
+      return statements;
     }
 
     // The view's columns that have a comment or a default.
@@ -946,14 +958,14 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
       var statements = new ArrayList<String>();
       statements.add(trigger.definition());
       // Created enabled in origin mode, as the catalog's O.
-      var mode = switch (trigger.enabled()) {
+      var enabling = switch (trigger.enabled()) {
         case "D" -> " DISABLE TRIGGER ";
         case "R" -> " ENABLE REPLICA TRIGGER ";
         case "A" -> " ENABLE ALWAYS TRIGGER ";
         default -> "";
       };
-      if (!mode.isEmpty()) {
-        statements.add(ALTER + table + mode + quote(item.name()));
+      if (!enabling.isEmpty()) {
+        statements.add(ALTER + table + enabling + quote(item.name()));
       }
       var needs = new HashSet<Item>();
       var function = known.routines.get(trigger.function());

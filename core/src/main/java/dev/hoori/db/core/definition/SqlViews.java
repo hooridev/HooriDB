@@ -71,24 +71,36 @@ public record SqlViews(Connection connection, Provider provider, boolean readOnl
     var views = provider.dialect().views();
     return on(change.view(), sql -> {
       try {
-        if (change.transaction()) {
-          inTransaction(sql, change.statements());
-        } else {
-          for (var statement : change.statements()) {
-            send(sql, statement);
-          }
-        }
+        sendAll(sql, change);
       } catch (QueryException e) {
-        if (change.kind() == ViewChange.Kind.REPLACE && views.keepsColumns(e)) {
-          return new KeepsColumns(e.detail());
-        }
-        if (change.kind() == ViewChange.Kind.DROP && views.dependedOn(e)) {
-          return new DependedOn(e.detail());
-        }
-        throw e;
+        return refused(change, views, e);
       }
       return new Done();
     });
+  }
+
+  // The change's statements, in one transaction where it has one.
+  private void sendAll(Sql sql, ViewChange change) throws QueryException {
+    if (change.transaction()) {
+      inTransaction(sql, change.statements());
+      return;
+    }
+    for (var statement : change.statements()) {
+      send(sql, statement);
+    }
+  }
+
+  // What a change that failed tells: that the server refused it in a way that asks for another,
+  // else its failure, thrown.
+  private static Changed refused(ViewChange change, ViewDialect views, QueryException e)
+      throws QueryException {
+    if (change.kind() == ViewChange.Kind.REPLACE && views.keepsColumns(e)) {
+      return new KeepsColumns(e.detail());
+    }
+    if (change.kind() == ViewChange.Kind.DROP && views.dependedOn(e)) {
+      return new DependedOn(e.detail());
+    }
+    throw e;
   }
 
   // All or none: a failure rolls back what went before it; either way auto-commit comes back on.
