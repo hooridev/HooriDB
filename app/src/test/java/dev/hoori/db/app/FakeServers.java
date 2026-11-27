@@ -1499,9 +1499,9 @@ final class FakeServers implements Servers {
       // transaction, which the emptying is in, of which the import wrote those after the kept.
       var original = materializeRows(path, columns);
       var importing = new Importing(original, options.empty() ? List.of() : original);
-      var failed = new ArrayList<Inserts.Failed>();
+      var rowsFailed = new ArrayList<Inserts.Failed>();
       long read = 0;
-      long failures = 0;
+      long failing = 0;
       int batches = 0;
       var batch = new ArrayList<List<Object>>();
       Inserts.Failed stopped = null;
@@ -1514,7 +1514,7 @@ final class FakeServers implements Servers {
             case Inserts.Row.Unreadable(var line, var reason) ->
               failure = new Inserts.Failed(line, reason);
             case Inserts.Row.Values(var line, var texts) -> {
-              var made = new Object[columns.size()];
+              var values = new Object[columns.size()];
               for (int i = 0; i < targets.size() && failure == null; i++) {
                 var text = texts.get(i);
                 var column = columns.get(targets.get(i));
@@ -1528,7 +1528,7 @@ final class FakeServers implements Servers {
                       line, "ERROR: null value in column \"" + column.name() + "\"");
                 } else {
                   try {
-                    made[targets.get(i)] = imported(kind(column.type()), text);
+                    values[targets.get(i)] = imported(kind(column.type()), text);
                   } catch (RuntimeException _) {
                     failure = new Inserts.Failed(
                         line, "ERROR: invalid input syntax for " + column.type() + ": " + text);
@@ -1536,23 +1536,23 @@ final class FakeServers implements Servers {
                 }
               }
               if (failure == null) {
-                batch.add(Collections.unmodifiableList(Arrays.asList(made)));
+                batch.add(Collections.unmodifiableList(Arrays.asList(values)));
               }
             }
           }
           if (failure != null) {
-            failures++;
-            failed.add(failure);
+            failing++;
+            rowsFailed.add(failure);
             if (options.onError() == Inserts.OnError.STOP) {
               stopped = failure;
             }
           }
           if (stopped == null && batch.size() >= options.batch()) {
-            batches = batch(key, ++batches, batch, importing, options, progress, read, failures);
+            batches = batch(key, ++batches, batch, importing, options, progress, read, failing);
           }
         }
         if (stopped == null && !batch.isEmpty()) {
-          batches = batch(key, ++batches, batch, importing, options, progress, read, failures);
+          batches = batch(key, ++batches, batch, importing, options, progress, read, failing);
         }
         if (stopped == null) {
           enduring(key + " commit");
@@ -1570,8 +1570,8 @@ final class FakeServers implements Servers {
       }
       done.add(key);
       return new Inserts.Report(
-          new Inserts.Count(read, importing.imported, importing.imported, failures),
-          failed,
+          new Inserts.Count(read, importing.imported, importing.imported, failing),
+          rowsFailed,
           stopped,
           cancelled);
     }
@@ -1608,17 +1608,17 @@ final class FakeServers implements Servers {
       if (gate == null) {
         return;
       }
-      var interrupted = false;
+      var stopped = false;
       while (true) {
         try {
           gate.await();
           break;
         } catch (InterruptedException _) {
-          interrupted = true;
+          stopped = true;
           FakeServers.this.interrupted.add(key);
         }
       }
-      if (interrupted) {
+      if (stopped) {
         Thread.currentThread().interrupt();
       }
     }

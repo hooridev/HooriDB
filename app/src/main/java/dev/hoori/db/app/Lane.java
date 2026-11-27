@@ -182,7 +182,7 @@ final class Lane {
       Consumer<? super T> onResult,
       Consumer<? super Exception> onFailure) {
     var stoppable = new Stoppable();
-    ask(app, name, priority, link -> stoppable.run(call, link), onResult, onFailure);
+    ask(app, name, priority, on -> stoppable.run(call, on), onResult, onFailure);
     return stoppable;
   }
 

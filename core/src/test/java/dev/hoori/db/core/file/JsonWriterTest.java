@@ -43,14 +43,13 @@ class JsonWriterTest {
     var rows = List.of(
         Arrays.<Object>asList(1L, new BigDecimal("1E+2"), true, "{\"a\": [1, 2]}", AT, "x\"y"),
         Arrays.<Object>asList(2L, Double.NaN, null, "not json", null, null));
-    assertEquals(
-        "[\n"
-            + "{\"id\":1,\"price\":100,\"ok\":true,\"doc\":{\"a\":[1,2]},"
-            + "\"at\":\"2024-01-02T03:04:05+00:00\",\"name\":\"x\\\"y\"},\n"
-            + "{\"id\":2,\"price\":\"NaN\",\"ok\":null,\"doc\":\"not json\",\"at\":null,"
-            + "\"name\":null}\n"
-            + "]\n",
-        written(Format.Json.ARRAY, rows));
+    assertEquals("""
+        [
+        {"id":1,"price":100,"ok":true,"doc":{"a":[1,2]},\
+        "at":"2024-01-02T03:04:05+00:00","name":"x\\"y"},
+        {"id":2,"price":"NaN","ok":null,"doc":"not json","at":null,"name":null}
+        ]
+        """, written(Format.Json.ARRAY, rows));
   }
 
   @Test
@@ -59,8 +58,11 @@ class JsonWriterTest {
         Arrays.<Object>asList(1L, null, false, "[1] [2]", null, "a"),
         Arrays.<Object>asList(2L, null, false, "3", null, "b"));
     assertEquals(
-        "{\"id\":1,\"price\":null,\"ok\":false,\"doc\":\"[1] [2]\",\"at\":null,\"name\":\"a\"}\r\n"
-            + "{\"id\":2,\"price\":null,\"ok\":false,\"doc\":3,\"at\":null,\"name\":\"b\"}\r\n",
+        String.join(
+            "\r\n",
+            "{\"id\":1,\"price\":null,\"ok\":false,\"doc\":\"[1] [2]\",\"at\":null,\"name\":\"a\"}",
+            "{\"id\":2,\"price\":null,\"ok\":false,\"doc\":3,\"at\":null,\"name\":\"b\"}",
+            ""),
         written(Format.Json.LINES.withLineEnd(LineEnd.CRLF), rows));
     assertEquals("[]\n", written(Format.Json.ARRAY, List.of()));
     assertEquals("", written(Format.Json.LINES, List.of()));

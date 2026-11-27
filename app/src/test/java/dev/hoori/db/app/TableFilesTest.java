@@ -344,10 +344,15 @@ class TableFilesTest {
   void aCancelledImportSaysWhatItsBatchesCommittedOnceItHasEnded() throws Exception {
     var gate = servers.hold("import " + CUSTOMERS + " 2");
     var file = Files.writeString(out.resolve("people.csv"), "id,name\n3,Carol\n4,Dan\n5,Eve\n");
-    var app = importing(
-        file,
-        "press role=radio label=\"Commit each batch\"\nframe\npress #batch\nkey A control\n"
-            + "type \"1\"\nkey Enter\nframe\n");
+    var app = importing(file, """
+        press role=radio label="Commit each batch"
+        frame
+        press #batch
+        key A control
+        type "1"
+        key Enter
+        frame
+        """);
     c.run(app, press("import") + SHOWN);
     CatalogTreeTest.eventually(() -> servers.calls.contains("import " + CUSTOMERS + " 2"));
     c.run(app, press("import-cancel") + "snap cancelling\n");

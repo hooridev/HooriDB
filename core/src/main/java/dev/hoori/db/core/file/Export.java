@@ -63,18 +63,7 @@ public final class Export {
         rows = reading.read(writer);
         writer.finish();
       }
-      // In one step, so that the file is the old one or the new one, never a part of either; a
-      // file system that cannot do that fails the export, which leaves the folder as it was.
-      try {
-        Files.move(part, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-      } catch (AtomicMoveNotSupportedException e) {
-        var refused = new FileSystemException(
-            file.toString(),
-            null,
-            "its file system cannot put a file in the place of another in one step");
-        refused.initCause(e);
-        throw refused;
-      }
+      replace(part, file);
       return rows;
     } catch (IOException | QueryException | RuntimeException e) {
       try {
@@ -83,6 +72,22 @@ public final class Export {
         e.addSuppressed(left);
       }
       throw e;
+    }
+  }
+
+  // Puts the part in the file's place in one step, so that the file is the old one or the new
+  // one, never a part of either; a file system that cannot do that fails the export, which leaves
+  // the folder as it was.
+  private static void replace(Path part, Path file) throws IOException {
+    try {
+      Files.move(part, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+    } catch (AtomicMoveNotSupportedException e) {
+      var refused = new FileSystemException(
+          file.toString(),
+          null,
+          "its file system cannot put a file in the place of another in one step");
+      refused.initCause(e);
+      throw refused;
     }
   }
 

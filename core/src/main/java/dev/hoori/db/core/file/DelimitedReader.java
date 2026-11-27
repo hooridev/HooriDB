@@ -53,13 +53,7 @@ final class DelimitedReader implements Closeable {
     if (!ahead.isEmpty()) {
       return ahead.poll();
     }
-    if (!started) {
-      started = true;
-      var first = read();
-      if (first != Encoding.MARK && first >= 0) {
-        unread();
-      }
-    }
+    skipMark();
     var from = line;
     long empty = 0;
     int c;
@@ -67,30 +61,46 @@ final class DelimitedReader implements Closeable {
       end(c);
       empty++;
     }
-    Record record = null;
+    Record row = null;
     if (c >= 0) {
       unread();
-      record = record();
+      row = row();
     }
     var opening = width < 0;
-    if (opening && record != null) {
-      width = record.values().size();
+    if (opening && row != null) {
+      width = row.values().size();
     }
     // Lines before the header are no rows.
     if (width == 1 && !(opening && format.header())) {
-      for (long i = 0; i < empty; i++) {
-        ahead.add(
-            new Record(from + i, Collections.singletonList(value(new StringBuilder(), false))));
-      }
+      emptyRows(from, empty);
     }
-    if (record != null) {
-      ahead.add(record);
+    if (row != null) {
+      ahead.add(row);
     }
     return ahead.poll();
   }
 
+  // Past the byte order mark the text starts with, where it has one.
+  private void skipMark() throws IOException {
+    if (started) {
+      return;
+    }
+    started = true;
+    var first = read();
+    if (first != Encoding.MARK && first >= 0) {
+      unread();
+    }
+  }
+
+  // The empty lines from the line, each a row of one column's empty value.
+  private void emptyRows(long from, long empty) {
+    for (long i = 0; i < empty; i++) {
+      ahead.add(new Record(from + i, Collections.singletonList(value(new StringBuilder(), false))));
+    }
+  }
+
   // The row that starts here, which holds a character.
-  private Record record() throws IOException {
+  private Record row() throws IOException {
     var start = line;
     var values = new ArrayList<String>();
     var value = new StringBuilder();
@@ -122,24 +132,39 @@ final class DelimitedReader implements Closeable {
         throw new IOException("The quoted value of line " + at + " does not end");
       }
       if (c == format.quote()) {
-        var next = read();
-        if (next != format.quote()) {
-          if (next >= 0) {
-            unread();
-          }
+        if (!doubledQuote()) {
           return;
         }
+        value.append((char) c);
       } else if (c == '\r' || c == '\n') {
-        var next = c == '\r' ? read() : -1;
-        if (next >= 0 && next != '\n') {
-          unread();
-        }
-        line++;
-        value.append(c == '\r' && next == '\n' ? "\r\n" : String.valueOf((char) c));
-        continue;
+        value.append(quotedLineEnd(c));
+      } else {
+        value.append((char) c);
       }
-      value.append((char) c);
     }
+  }
+
+  // Whether the quote read is the first of two, which stand for one; else it closed the value,
+  // and what follows is read next.
+  private boolean doubledQuote() throws IOException {
+    var next = read();
+    if (next == format.quote()) {
+      return true;
+    }
+    if (next >= 0) {
+      unread();
+    }
+    return false;
+  }
+
+  // The line end in a quoted value that the character begins, CRLF as one, as the value holds it.
+  private String quotedLineEnd(int c) throws IOException {
+    var next = c == '\r' ? read() : -1;
+    if (next >= 0 && next != '\n') {
+      unread();
+    }
+    line++;
+    return c == '\r' && next == '\n' ? "\r\n" : String.valueOf((char) c);
   }
 
   private String value(StringBuilder value, boolean quoted) {

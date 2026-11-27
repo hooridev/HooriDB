@@ -89,7 +89,7 @@ class TableFilesServerTest {
               + ", d date, z " + (pg ? "timestamptz" : "timestamp(3) NULL") + ", bin "
               + (pg ? "bytea" : "longblob") + ", j " + (pg ? "jsonb" : "json") + ")",
           "INSERT INTO " + qualified(provider, source) + " VALUES"
-              + " (1, " + literal(provider, longText) + ", 12345.67890, 0.5, " + (pg ? "true" : "1")
+              + " (1, " + literal(longText) + ", 12345.67890, 0.5, " + (pg ? "true" : "1")
               + ", '2024-02-29', "
               + (pg ? "'2024-03-31 02:30:00.123+00'" : "FROM_UNIXTIME(1711852200.123)")
               + ", " + longBytes + ", '{\"a\": [1, \"x,y\"]}'),"
@@ -593,7 +593,9 @@ class TableFilesServerTest {
                 () ->
                     Rows.each(connection, provider, table, columns, List.of(0, 1), new Rows.Each() {
                       @Override
-                      public void fields(List<Field> fields) {}
+                      public void fields(List<Field> fields) {
+                        // The fields are not looked at here.
+                      }
 
                       @Override
                       public void row(List<Object> values) {
@@ -662,7 +664,9 @@ class TableFilesServerTest {
         IntStream.range(0, columns.size()).boxed().toList(),
         new Rows.Each() {
           @Override
-          public void fields(List<Field> fields) {}
+          public void fields(List<Field> fields) {
+            // The fields are not looked at here.
+          }
 
           @Override
           public void row(List<Object> values) {
@@ -682,7 +686,7 @@ class TableFilesServerTest {
     assertEquals(new Status(Transaction.NONE, true), Status.of(connection, provider));
   }
 
-  private static String literal(Provider provider, String text) {
+  private static String literal(String text) {
     return "'" + text.replace("'", "''") + "'";
   }
 

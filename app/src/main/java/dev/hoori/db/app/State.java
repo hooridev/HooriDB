@@ -1269,7 +1269,9 @@ final class State {
         when !catalog.schemas(id) -> {
           return () -> openExport(id, n.database(), null);
         }
-        default -> {}
+        default -> {
+          // Another node exports the active tab's table, as below.
+        }
       }
     }
     return group.activeTab() instanceof TableTab x

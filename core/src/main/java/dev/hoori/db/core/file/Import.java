@@ -107,33 +107,33 @@ public final class Import {
 
     @Override
     public Inserts.Row next() throws IOException {
-      var record = reader.next();
-      if (record != null && header) {
+      var row = reader.next();
+      if (row != null && header) {
         header = false;
-        width = record.values().size();
-        record = reader.next();
+        width = row.values().size();
+        row = reader.next();
       }
-      if (record == null) {
+      if (row == null) {
         return null;
       }
-      var values = record.values();
+      var values = row.values();
       if (width < 0) {
         width = values.size();
       }
       if (values.size() != width) {
         return new Inserts.Row.Unreadable(
-            record.line(),
+            row.line(),
             "It has " + values(values.size()) + " where " + values(width) + " come before");
       }
       var given = new ArrayList<String>(columns.size());
       for (var column : columns) {
         if (column >= values.size()) {
           return new Inserts.Row.Unreadable(
-              record.line(), "It has no column " + (column + 1) + ", only " + values.size());
+              row.line(), "It has no column " + (column + 1) + ", only " + values.size());
         }
         given.add(values.get(column));
       }
-      return new Inserts.Row.Values(record.line(), given);
+      return new Inserts.Row.Values(row.line(), given);
     }
 
     private static String values(int n) {

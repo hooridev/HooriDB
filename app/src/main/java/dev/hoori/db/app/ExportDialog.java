@@ -278,48 +278,19 @@ final class ExportDialog {
     cancelled = false;
     at = 0;
     rows = 0;
-    var todo = plan;
+    var job = new Job(plan, names, into, format, single, picked, app, run);
     running = lane.ask(
         app,
         "export tables",
         Lane.Priority.VIEW,
         link -> {
-          for (int i = 0; i < todo.size(); i++) {
+          for (int i = 0; i < job.tables().size(); i++) {
             if (Thread.currentThread().isInterrupted()) {
               throw new InterruptedException("The export was cancelled");
             }
-            var table = todo.get(i);
-            var name = names.get(i);
             int index = i;
             app.post(() -> started(run, index));
-            Outcome outcome;
-            try {
-              var all = single != null ? single : link.columns(table);
-              var these = single != null
-                  ? picked
-                  : IntStream.range(0, all.size()).boxed().toList();
-              long written = Export.write(
-                  into.resolve(name),
-                  format,
-                  each -> link.export(table, all, these, counting(app, run, each)));
-              outcome = new Outcome.Written(table, name, written);
-            } catch (QueryException e) {
-              if (e.failure() == QueryException.Failure.CANCELLED
-                  || e.failure() == QueryException.Failure.ABORTED) {
-                throw e;
-              }
-              outcome = new Outcome.Failed(
-                  table, name, e.detail().isEmpty() ? e.getMessage() : e.detail());
-            } catch (CatalogException e) {
-              if (e.failure() == CatalogException.Failure.CANCELLED
-                  || e.failure() == CatalogException.Failure.ABORTED) {
-                throw e;
-              }
-              outcome = new Outcome.Failed(table, name, e.getMessage());
-            } catch (IOException e) {
-              outcome = new Outcome.Failed(table, name, FileProblem.of(e));
-            }
-            var done = outcome;
+            var done = write(link, job, i);
             app.post(() -> finished(app.state(), run, done));
           }
           return null;
@@ -335,6 +306,50 @@ final class ExportDialog {
             problem = "The export stopped: " + words(s, id, e);
           }
         });
+  }
+
+  // What a run of the export writes, where, and whom it tells how far it is: the columns chosen of
+  // the one table where only one is written, else each table's own.
+  private record Job(
+      List<Table> tables,
+      List<String> names,
+      Path into,
+      Format format,
+      List<Column> single,
+      List<Integer> picked,
+      App<State> app,
+      int run) {}
+
+  // Writes the job's table at the index into its file; what came of it. A cancel ends the run.
+  private Outcome write(Servers.Link link, Job job, int index)
+      throws QueryException, CatalogException {
+    var table = job.tables().get(index);
+    var name = job.names().get(index);
+    try {
+      var all = job.single() != null ? job.single() : link.columns(table);
+      var these = job.single() != null
+          ? job.picked()
+          : IntStream.range(0, all.size()).boxed().toList();
+      long written = Export.write(
+          job.into().resolve(name),
+          job.format(),
+          each -> link.export(table, all, these, counting(job.app(), job.run(), each)));
+      return new Outcome.Written(table, name, written);
+    } catch (QueryException e) {
+      if (e.failure() == QueryException.Failure.CANCELLED
+          || e.failure() == QueryException.Failure.ABORTED) {
+        throw e;
+      }
+      return new Outcome.Failed(table, name, e.detail().isEmpty() ? e.getMessage() : e.detail());
+    } catch (CatalogException e) {
+      if (e.failure() == CatalogException.Failure.CANCELLED
+          || e.failure() == CatalogException.Failure.ABORTED) {
+        throw e;
+      }
+      return new Outcome.Failed(table, name, e.getMessage());
+    } catch (IOException e) {
+      return new Outcome.Failed(table, name, FileProblem.of(e));
+    }
   }
 
   // The rows as they go by, told now and then, not each one.
@@ -533,15 +548,17 @@ final class ExportDialog {
     kind = k;
   }
 
+  private static final String COLUMNS = "Columns";
+
   private Form.Field columnsField(boolean busy) {
     Theme t = Theme.CURRENT.get();
     if (checked.size() != 1) {
       return Form.field(
-          "Columns", label(Label.Variant.MUTED, "All columns of each table").key("columns"));
+          COLUMNS, label(Label.Variant.MUTED, "All columns of each table").key("columns"));
     }
     if (columns == null) {
       return Form.field(
-          "Columns",
+          COLUMNS,
           row()
               .gap(t.space().s())
               .role("status")
@@ -565,18 +582,14 @@ final class ExportDialog {
               }));
     }
     return Form.field(
-        "Columns",
+        COLUMNS,
         Card.flush(list.scroll().key("columns")).h(4 * t.size().control()).wFull());
   }
 
   private Form.Field folderField(State s, boolean busy) {
     Theme t = Theme.CURRENT.get();
     var names = planned().isEmpty() ? List.<String>of() : Export.fileNames(planned(), formatOr());
-    var help = names.isEmpty()
-        ? null
-        : "Writes " + String.join(", ", names.size() > 3 ? names.subList(0, 3) : names)
-            + (names.size() > 3 ? " and " + (names.size() - 3) + " more" : "")
-            + ". A file of the same name is replaced once the new one is whole.";
+    var help = names.isEmpty() ? null : writes(names);
     var field = Form.field(
         "Folder",
         row()
@@ -591,6 +604,14 @@ final class ExportDialog {
     return help == null ? field : field.help(help);
   }
 
+  // The files that an export writes, the first three by name.
+  private static String writes(List<String> names) {
+    var named = names.size() > 3 ? names.subList(0, 3) : names;
+    var more = names.size() > 3 ? " and " + (names.size() - 3) + " more" : "";
+    return "Writes " + String.join(", ", named) + more
+        + ". A file of the same name is replaced once the new one is whole.";
+  }
+
   // The format, or CSV's where the options cannot make one, for the names of the files.
   private Format formatOr() {
     try {
@@ -598,6 +619,24 @@ final class ExportDialog {
     } catch (IllegalArgumentException _) {
       return Format.Delimited.CSV;
     }
+  }
+
+  // How the export ended: cancelled, or with the tables written.
+  private El outcome(int files, long written, boolean none) {
+    var where = folder == null ? "" : " in " + folder;
+    var summary = files + (files == 1 ? " table" : " tables") + ", " + ConsoleTab.rows(written)
+        + ", written" + where + ".";
+    if (cancelled) {
+      return Callout.callout(
+          Callout.Kind.WARNING,
+          "Export cancelled",
+          (files == 0 ? "No table was written." : summary)
+              + " The table it was writing left no file.");
+    }
+    return Callout.callout(
+        none ? Callout.Kind.SUCCESS : Callout.Kind.WARNING,
+        none ? "Exported" : "Exported with failures",
+        summary);
   }
 
   private El progress() {
@@ -625,23 +664,7 @@ final class ExportDialog {
       }
     }
     if (!running()) {
-      var where = folder == null ? "" : " in " + folder;
-      var summary = files + (files == 1 ? " table" : " tables") + ", " + ConsoleTab.rows(written)
-          + ", written" + where + ".";
-      if (cancelled) {
-        box.child(Callout.callout(
-                Callout.Kind.WARNING,
-                "Export cancelled",
-                (files == 0 ? "No table was written." : summary)
-                    + " The table it was writing left no file.")
-            .key("export-outcome"));
-      } else {
-        box.child(Callout.callout(
-                failed.isEmpty() ? Callout.Kind.SUCCESS : Callout.Kind.WARNING,
-                failed.isEmpty() ? "Exported" : "Exported with failures",
-                summary)
-            .key("export-outcome"));
-      }
+      box.child(outcome(files, written, failed.isEmpty()).key("export-outcome"));
     }
     for (var f : failed) {
       box.child(

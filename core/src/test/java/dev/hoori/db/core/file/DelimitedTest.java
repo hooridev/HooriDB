@@ -73,8 +73,16 @@ class DelimitedTest {
         row(5L, ""),
         row(null, null));
     assertEquals(
-        "id,\"name, full\"\r\n1,plain\r\n2,\"a, b\"\r\n3,\"say \"\"hi\"\"\"\r\n"
-            + "4,\"two\nlines\"\r\n5,\"\"\r\n,\r\n",
+        String.join(
+            "\r\n",
+            "id,\"name, full\"",
+            "1,plain",
+            "2,\"a, b\"",
+            "3,\"say \"\"hi\"\"\"",
+            "4,\"two\nlines\"",
+            "5,\"\"",
+            ",",
+            ""),
         written(Format.Delimited.CSV, rows));
   }
 
@@ -248,6 +256,7 @@ class DelimitedTest {
     assertEquals("00ff10", Texts.of(new Binary(new byte[] {0, -1, 16}, 3)));
     assertEquals("0000-00-00", Texts.of("0000-00-00"));
     assertNull(Texts.of(null));
-    assertThrows(IllegalArgumentException.class, () -> Texts.of(new Binary(new byte[1], 2)));
+    var cut = new Binary(new byte[1], 2);
+    assertThrows(IllegalArgumentException.class, () -> Texts.of(cut));
   }
 }

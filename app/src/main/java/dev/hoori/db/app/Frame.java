@@ -49,6 +49,16 @@ final class Frame {
 
   private Frame() {}
 
+  // The dialogs of the main window over it, those open.
+  private static void overlayDialogs(State s, El root) {
+    root.overlay(s.dialogs.deleting == null ? null : deleteDialog(s));
+    root.overlay(s.dialogs.folderDialog == null ? null : s.dialogs.folderDialog.view(s));
+    root.overlay(s.dialogs.queryDialog == null ? null : s.dialogs.queryDialog.view(s));
+    root.overlay(s.dialogs.about ? aboutDialog(s) : null);
+    root.overlay(s.dialogs.export == null ? null : s.dialogs.export.view(s));
+    root.overlay(s.dialogs.importing == null ? null : s.dialogs.importing.view(s));
+  }
+
   static El view(State s) {
     Theme t = Theme.CURRENT.get();
     var main = s.tabs.main().active();
@@ -98,12 +108,7 @@ final class Frame {
           .overlay(s.dialogs.dialog.driverDialog(s))
           .overlay(s.dialogs.dialog.question(s));
     }
-    root.overlay(s.dialogs.deleting == null ? null : deleteDialog(s));
-    root.overlay(s.dialogs.folderDialog == null ? null : s.dialogs.folderDialog.view(s));
-    root.overlay(s.dialogs.queryDialog == null ? null : s.dialogs.queryDialog.view(s));
-    root.overlay(s.dialogs.about ? aboutDialog(s) : null);
-    root.overlay(s.dialogs.export == null ? null : s.dialogs.export.view(s));
-    root.overlay(s.dialogs.importing == null ? null : s.dialogs.importing.view(s));
+    overlayDialogs(s, root);
     root.overlay(asked);
     root.overlay(question);
     root.overlay(confirmation);

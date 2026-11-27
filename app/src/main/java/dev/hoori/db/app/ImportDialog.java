@@ -53,7 +53,7 @@ import java.util.stream.IntStream;
 final class ImportDialog {
 
   /** How many rows of the file the preview shows. */
-  static final int PREVIEWED = 20;
+  static final int PREVIEW_ROWS = 20;
 
   /** A column of the table that no column of the file goes into. */
   static final int NONE = -1;
@@ -164,22 +164,29 @@ final class ImportDialog {
           if (!choice.cancelled()) {
             file = choice.path();
             var name = file.getFileName().toString().toLowerCase(Locale.ROOT);
-            options.delimiter = name.endsWith(".tsv")
-                ? ExportDialog.Options.Delimiter.TAB
-                : options.delimiter == ExportDialog.Options.Delimiter.TAB
-                    ? ExportDialog.Options.Delimiter.COMMA
-                    : options.delimiter;
-            preview(s);
+            options.delimiter = delimiterOf(name, options.delimiter);
+            readPreview(s);
           }
         },
         error -> problem = "The file could not be chosen: " + error);
+  }
+
+  // A file named .tsv is read with tabs, and another one that tabs were chosen for, with commas.
+  private static ExportDialog.Options.Delimiter delimiterOf(
+      String name, ExportDialog.Options.Delimiter chosen) {
+    if (name.endsWith(".tsv")) {
+      return ExportDialog.Options.Delimiter.TAB;
+    }
+    return chosen == ExportDialog.Options.Delimiter.TAB
+        ? ExportDialog.Options.Delimiter.COMMA
+        : chosen;
   }
 
   /**
    * Reads the first rows of the file as the options read them now, off the app's thread; the
    * preview shown, and the mapping made for it, stay until it comes, but Import waits for it.
    */
-  void preview(State s) {
+  void readPreview(State s) {
     var format = format();
     int number = ++previews;
     if (file == null || format == null) {
@@ -193,27 +200,37 @@ final class ImportDialog {
     var at = file;
     s.app.background(
         "preview a file to import",
-        () -> Import.preview(at, format, PREVIEWED),
-        read -> {
-          if (number == previews) {
-            previewed = number;
-            var before = preview == null ? null : preview.names();
-            preview = read;
-            unreadable = null;
-            if (!read.names().equals(before)) {
-              map();
-            }
-          }
-        },
-        e -> {
-          if (number == previews) {
-            previewed = number;
-            preview = null;
-            unreadable = e instanceof IOException io
-                ? FileProblem.of(io)
-                : e.getMessage() == null ? e.toString() : e.getMessage();
-          }
-        });
+        () -> Import.preview(at, format, PREVIEW_ROWS),
+        read -> previewRead(number, read),
+        e -> previewFailed(number, e));
+  }
+
+  // The preview read, unless a later one was asked for meanwhile.
+  private void previewRead(int number, Import.Preview read) {
+    if (number != previews) {
+      return;
+    }
+    previewed = number;
+    var before = preview == null ? null : preview.names();
+    preview = read;
+    unreadable = null;
+    if (!read.names().equals(before)) {
+      map();
+    }
+  }
+
+  // The preview that could not be read, unless a later one was asked for meanwhile.
+  private void previewFailed(int number, Throwable e) {
+    if (number != previews) {
+      return;
+    }
+    previewed = number;
+    preview = null;
+    if (e instanceof IOException io) {
+      unreadable = FileProblem.of(io);
+    } else {
+      unreadable = e.getMessage() == null ? e.toString() : e.getMessage();
+    }
   }
 
   /** Whether the preview shown is not yet of the options as they are now. */
@@ -414,15 +431,7 @@ final class ImportDialog {
     var content = col().w(36 * unit).gap(t.space().m());
     Runnable close = () -> close(s);
     if (readOnly) {
-      content.child(Callout.callout(
-              Callout.Kind.WARNING,
-              "The connection is read-only",
-              "Nothing can be imported into " + table.name() + " on it. Edit the connection to"
-                  + " make it writable.")
-          .key("read-only"));
-      El ok = button(PRIMARY, "Close", close).key("import-close");
-      return Dialog.dialog("Import into " + table.name(), content, List.of(ok), ok, close)
-          .key("import-dialog");
+      return readOnlyView(content, close);
     }
     if (problem != null) {
       content.child(
@@ -432,19 +441,8 @@ final class ImportDialog {
     if (busy || report != null || cancelled) {
       content.child(progress(s, unit));
     }
-    var file = Form.field(
-        "File",
-        row()
-            .wFull()
-            .gap(t.space().s())
-            .child(label(this.file == null ? "None chosen" : this.file.toString())
-                .key("file")
-                .grow(1))
-            .child(button(SECONDARY, "Choose…", busy ? null : () -> chooseFile(s))
-                .key("choose-file")
-                .label("Choose file")));
     // One width of labels, so that the forms line up.
-    var reading = readingFields(s, file, busy);
+    var reading = readingFields(s, fileField(s, busy), busy);
     var mapped = columns != null && preview != null ? mappingFields(busy) : new Form.Entry[0];
     var written = columns != null && preview != null ? writingFields(busy) : new Form.Entry[0];
     var all = new ArrayList<Form.Entry>(List.of(reading));
@@ -461,9 +459,7 @@ final class ImportDialog {
     var missing = missing();
     El start = button(PRIMARY, "Import", missing == null && !busy ? () -> start(s) : null)
         .key("import");
-    El end = busy
-        ? button(SECONDARY, "Cancel", cancelling() ? null : this::cancel).key("import-cancel")
-        : button(SECONDARY, "Close", close).key("import-close");
+    El end = endButton(busy, close);
     return Dialog.dialog(
             "Import into " + table.name(),
             content,
@@ -474,7 +470,7 @@ final class ImportDialog {
   }
 
   private Form.Entry[] readingFields(State s, Form.Field file, boolean busy) {
-    Runnable again = () -> preview(s);
+    Runnable again = () -> readPreview(s);
     return new Form.Entry[] {
       file,
       Form.field(
@@ -603,9 +599,7 @@ final class ImportDialog {
           Select.select(
                   choices,
                   mapping[i] < names.size() ? mapping[i] : NONE,
-                  f -> f == NONE
-                      ? "Not imported: its default"
-                      : names.get(f).isEmpty() ? "Column " + (f + 1) : names.get(f),
+                  f -> fileColumn(names, f),
                   menu,
                   busy ? null : f -> mapping[index] = f)
               .key("map-" + i)
@@ -613,6 +607,50 @@ final class ImportDialog {
               .w(12 * Theme.CURRENT.get().size().control()));
     }
     return fields;
+  }
+
+  // Why nothing can be imported on a read-only connection.
+  private El readOnlyView(El content, Runnable close) {
+    content.child(Callout.callout(
+            Callout.Kind.WARNING,
+            "The connection is read-only",
+            "Nothing can be imported into " + table.name() + " on it. Edit the connection to"
+                + " make it writable.")
+        .key("read-only"));
+    El ok = button(PRIMARY, "Close", close).key("import-close");
+    return Dialog.dialog("Import into " + table.name(), content, List.of(ok), ok, close)
+        .key("import-dialog");
+  }
+
+  private Form.Field fileField(State s, boolean busy) {
+    Theme t = Theme.CURRENT.get();
+    return Form.field(
+        "File",
+        row()
+            .wFull()
+            .gap(t.space().s())
+            .child(label(file == null ? "None chosen" : file.toString())
+                .key("file")
+                .grow(1))
+            .child(button(SECONDARY, "Choose…", busy ? null : () -> chooseFile(s))
+                .key("choose-file")
+                .label("Choose file")));
+  }
+
+  // Cancel while the import runs, else Close.
+  private El endButton(boolean busy, Runnable close) {
+    if (!busy) {
+      return button(SECONDARY, "Close", close).key("import-close");
+    }
+    return button(SECONDARY, "Cancel", cancelling() ? null : this::cancel).key("import-cancel");
+  }
+
+  // The file's column as a choice of the mapping.
+  private static String fileColumn(List<String> names, int f) {
+    if (f == NONE) {
+      return "Not imported: its default";
+    }
+    return names.get(f).isEmpty() ? "Column " + (f + 1) : names.get(f);
   }
 
   private Form.Entry[] writingFields(boolean busy) {
@@ -674,60 +712,66 @@ final class ImportDialog {
           .child(label(cancelling() ? "Cancelling… " + counted : counted)));
       return box;
     }
-    var c = count;
-    if (cancelled) {
-      box.child(Callout.callout(
-              Callout.Kind.WARNING,
-              "Import cancelled",
-              c.committed() == 0
-                  ? "Nothing was imported."
-                  : "Earlier batches committed " + ConsoleTab.rows(c.committed()) + ".")
-          .key("import-outcome"));
-    } else if (report.stopped()) {
-      var stop = report.stoppedAt();
-      box.child(Callout.callout(
-              Callout.Kind.DANGER,
-              "Stopped at line " + stop.line(),
-              words(s, id, stop.message()) + "\n"
-                  + (c.committed() == 0
-                      ? "Nothing was imported."
-                      : "Earlier batches committed " + ConsoleTab.rows(c.committed()) + "."))
-          .key("import-outcome"));
-    } else {
-      box.child(Callout.callout(
-              c.failed() == 0 ? Callout.Kind.SUCCESS : Callout.Kind.WARNING,
-              "Imported",
-              ConsoleTab.rows(c.committed()) + " written into " + table.name()
-                  + (c.failed() == 0 ? "." : ", " + ConsoleTab.rows(c.failed()) + " skipped."))
-          .key("import-outcome"));
-    }
+    box.child(outcome(s).key("import-outcome"));
     var failed = report == null ? List.<Inserts.Failed>of() : report.failed();
     if (!failed.isEmpty() && !(report.stopped() && failed.size() == 1)) {
-      var columns = List.of(
-          new DataGrid.Column(
-                  "Line",
-                  3 * unit,
-                  DataGrid.DataType.INTEGER,
-                  r -> Long.toString(failed.get(r).line()))
-              .sortable(false),
-          new DataGrid.Column(
-                  "Why",
-                  26 * unit,
-                  DataGrid.DataType.TEXT,
-                  r -> words(s, id, failed.get(r).message()))
-              .sortable(false));
       box.child(label(
-          c.failed() > failed.size()
-              ? "The first " + failed.size() + " of " + c.failed() + " rows that failed"
+          count.failed() > failed.size()
+              ? "The first " + failed.size() + " of " + count.failed() + " rows that failed"
               : "The rows that failed"));
-      box.child(Card.flush(
-              DataGrid.dataGrid(columns, failed.size(), DataGrid.options().select(failedSelection))
-                  .key("failed")
-                  .label("Rows that failed")
-                  .grow(1))
-          .wFull()
-          .h(5 * unit));
+      box.child(failedView(s, unit, failed));
     }
     return box;
+  }
+
+  // How the import ended: cancelled, stopped at a row, or done.
+  private El outcome(State s) {
+    var c = count;
+    if (cancelled || report == null) {
+      return Callout.callout(Callout.Kind.WARNING, "Import cancelled", committed(c));
+    }
+    if (report.stopped()) {
+      var stop = report.stoppedAt();
+      return Callout.callout(
+          Callout.Kind.DANGER,
+          "Stopped at line " + stop.line(),
+          words(s, id, stop.message()) + "\n" + committed(c));
+    }
+    return Callout.callout(
+        c.failed() == 0 ? Callout.Kind.SUCCESS : Callout.Kind.WARNING,
+        "Imported",
+        ConsoleTab.rows(c.committed()) + " written into " + table.name()
+            + (c.failed() == 0 ? "." : ", " + ConsoleTab.rows(c.failed()) + " skipped."));
+  }
+
+  // What earlier batches committed, where the import ended before its end.
+  private static String committed(Inserts.Count c) {
+    return c.committed() == 0
+        ? "Nothing was imported."
+        : "Earlier batches committed " + ConsoleTab.rows(c.committed()) + ".";
+  }
+
+  // The rows that failed, by their line and why.
+  private El failedView(State s, float unit, List<Inserts.Failed> failed) {
+    var gridColumns = List.of(
+        new DataGrid.Column(
+                "Line",
+                3 * unit,
+                DataGrid.DataType.INTEGER,
+                r -> Long.toString(failed.get(r).line()))
+            .sortable(false),
+        new DataGrid.Column(
+                "Why",
+                26 * unit,
+                DataGrid.DataType.TEXT,
+                r -> words(s, id, failed.get(r).message()))
+            .sortable(false));
+    return Card.flush(DataGrid.dataGrid(
+                gridColumns, failed.size(), DataGrid.options().select(failedSelection))
+            .key("failed")
+            .label("Rows that failed")
+            .grow(1))
+        .wFull()
+        .h(5 * unit);
   }
 }
