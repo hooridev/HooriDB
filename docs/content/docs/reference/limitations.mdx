@@ -20,7 +20,9 @@ HooriDB is in early development. The list below covers what it cannot do yet.
 ## Browsing and schema management
 
 - The Workspace tree shows databases, schemas (on PostgreSQL), tables, views, columns, and [functions and procedures](/docs/features/routines). It does not list constraints, sequences, triggers, events, or other objects.
-- Routines are not found by the command palette's `@` search or offered by completion. Routine tabs are not reopened at the next start, and closing one with unsaved edits does not ask first. PostgreSQL gives no source for an aggregate function, and HooriDB does not change only a routine's characteristics with `ALTER`. MariaDB's packages are not listed.
+- Routines are not found by the command palette's `@` search or offered by completion. Routine tabs are not reopened at the next start. PostgreSQL gives no source for an aggregate function, and HooriDB does not change only a routine's characteristics with `ALTER`. MariaDB's packages are not listed.
+- On MySQL, Save drops a routine and creates it again: the privileges granted on that routine alone are gone afterwards and must be granted again by hand. The routine's `character_set_client` is not kept. If the connection is lost between the `DROP` and the `CREATE`, the routine is gone, and its source stays in the tab. A connection lost while Save tries the text under its own name may leave a `hooridb_check_…` routine behind.
+- Run cannot call PostgreSQL's aggregate, window and trigger functions, functions of polymorphic arguments, or functions that return `record` without OUT arguments; call them in a console.
 - There is no visual editor for creating or altering tables, columns, or schemas.
 
 ## SQL console and history

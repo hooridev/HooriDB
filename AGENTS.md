@@ -152,25 +152,33 @@ psql's `\restrict` and `\unrestrict` are skipped and its other backslash command
 stops the run. On an error it stops or goes on, optionally in one transaction, which an error or a
 cancel rolls back, which refuses a statement of the file that begins or ends a transaction, and
 which the dialog says does not cover DDL where the server commits it by itself; it shows the bytes
-and statements run, cancels at any point, also while its session connects, can be hidden behind
-the status line, which counts a run in one transaction as uncommitted work, says in a desktop
-notification that a hidden run ended, and ends with the failed statements and their lines,
-passwords masked, and the server's words on a copy withheld. Its statements go into the statement
-log, not the history; disconnecting, changing or deleting its connection and Exit cancel it, after
-a question where it runs in one transaction; a transaction's end in doubt and a session's closing
-that fails go to the notices, which keeps Exit open. A schema, or a database on MySQL and MariaDB, has a Routines node after its tables,
-read when opened, with its functions and procedures, their argument types and what they return,
-overloads apart by their arguments; a routine opens in a tab of its own with its source, the
-server's CREATE statement (`pg_get_functiondef`, `SHOW CREATE`, with `OR REPLACE` on MariaDB), in
-the console's colors and read-only until Edit. Save, New function or procedure (from the dialect's
-template) and Drop show their statements first and run on a session opened for the change alone,
-never the tree's, sending the editor's text as one statement whatever its body holds; MySQL, which
-cannot replace a routine in one step, drops it first and creates it again from its source where the
-new one fails; the tree reads the routines again after a change, and a read-only connection offers
-none of them and sends none. Run asks a value or NULL for each argument and opens a console on the
-routine's database that runs the call (`SELECT * FROM f(…)`, `SELECT f(…)`, `CALL p(…)`, OUT
-values through session variables on MySQL and MariaDB) with the values bound, which the console
-keeps for those statements while their text is unchanged. Run from its app image,
+and statements run, cancels at any point, also while its session connects, can be hidden behind the
+status line, which counts a run in one transaction as uncommitted work, says in a desktop
+notification that a hidden run ended, and ends with the failed statements and their lines, passwords
+masked, and the server's words on a copy withheld. Its statements go into the statement log, not the
+history; disconnecting, changing or deleting its connection and Exit cancel it, after a question
+where it runs in one transaction; a transaction's end in doubt and a session's closing that fails go
+to the notices, which keeps Exit open. A schema, or a database on MySQL and MariaDB, has a Routines
+node after its tables, read when opened, with its functions and procedures, their argument types and
+what they return, overloads apart by their arguments; a routine opens in a tab of its own with its
+source, the server's CREATE statement (`pg_get_functiondef`, `SHOW CREATE`, with `OR REPLACE` on
+MariaDB), in the console's colors and read-only until Edit. Save, New function or procedure (from
+the dialect's template) and Drop show their statements first and run on a session opened for the
+change alone, never the tree's, sending the editor's text as one statement whatever its body holds;
+MySQL, which cannot replace a routine in one step, tries the text under a name of its own first,
+then drops the routine and creates it, and creates it again from its source where the new one fails,
+without its definer where the user may not name it, the source staying in the tab where that fails
+too; the session is set first to the sql_mode the routine was created under, on MariaDB too; Save is
+open once the text has edits, by Control+S too, an edited tab asks before it closes, at Exit and
+before its connection is deleted, a change runs to its end once the tab closes, which Exit waits for
+and whose failure goes to the notices, and Cancel stops it only before its DROP; the tree reads the
+routines again after a change, and a read-only connection offers none of them and sends none.
+PostgreSQL's routines of an extension are left out. Run asks a value or NULL for each argument, a
+value where the type has no empty one, is off for what a call alone cannot run, as PostgreSQL's
+aggregates, window and trigger functions, and opens a console on the routine's database that runs
+the call (`SELECT * FROM f(…)`, `SELECT f(…)`, `CALL p(…)`, OUT values through session variables on
+MySQL and MariaDB) with the values bound, which the console keeps for those statements while their
+text is unchanged. Run from its app image,
 HooriDB looks for a newer GitHub release at each start, in the channel Settings chooses, Stable or
 Nightly (at first that of its own version), downloads it, shows its highlights and change count in a
 tooltip while its notice is hovered, and restarts into it through its own Exit when asked; the new
@@ -322,7 +330,11 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   it reads tables; `routine.Routines` says what Save and Drop send and sends it with `Execution`,
   under `Purpose.DEFINITION`, refusing it unsent on a read-only connection; `Execution` binds a
   call's values to its `?` as text, which the server reads as each parameter's type, and records the
-  text alone.
+  text alone. `sql.RoutineHead` reads a CREATE statement's kind, name and definer, by which Save
+  refuses a text of another routine where the dialect drops first (`dropFirst`), and writes its
+  trial under another name and its source without its definer; a source (`Routine.Source`) carries
+  the statements that set a session as the routine was created. `Routines.Applying` cancels a
+  change until its DROP.
 - No MongoDB driver is on the class path. Core compiles its bridge,
   `dev.hoori.db.core.document.mongo`, against the driver as a provided dependency, and `DriverStore`
   defines that package's classes from core's file in the downloaded driver's class loader, where
@@ -441,6 +453,8 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   dialect writes takes its routine out, `defines` gives what another does, as a CREATE that puts a
   routine in, and `definitionFails` how it fails; a read-only link refuses the change unsent. A
   statement run with values notes `bind <host> <values>`, NULL for a null, before its `run` key.
+  A change runs in the order and with the cancel and restore of core's `Routines.apply`, so that
+  its trial, a name of its own (`hooridb_check_…`), is keyed by that name.
   Core's `RoutinesTest` checks what Save, Drop and a call send, and `RoutinesServerTest` lists,
   reads, saves, drops and calls routines on each `TestServer` of SQL.
 - Updates run against `FakeUpdater`: releases published by version, the helper's result given,

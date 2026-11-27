@@ -7,7 +7,7 @@ The functions and procedures of a database, its **routines**, are in Workspace u
 
 ## Browse routines
 
-Each row shows a routine's name with the types of its arguments, such as `add(integer, integer)`, and what it returns. A procedure shows `procedure` instead, and its OUT arguments show as `OUT integer`. Routines with the same name and different arguments (overloads, on PostgreSQL) each get a row of their own, and every action below applies to the one you chose. On PostgreSQL, aggregate functions are listed too, marked `aggregate`.
+Each row shows a routine's name with the types of its arguments, such as `add(integer, integer)`, and what it returns. A procedure shows `procedure` instead, and its OUT arguments show as `OUT integer`. Routines with the same name and different arguments (overloads, on PostgreSQL) each get a row of their own, and every action below applies to the one you chose. On PostgreSQL, aggregate functions and window functions are listed too, marked `aggregate` and `window`. The functions that an extension installed, such as PostGIS's, belong to the extension and are not listed.
 
 Right-click **Routines** to create a function or a procedure. Right-click a routine for **Open**, **Run…**, **Drop…**, **Refresh**, and **Copy name**.
 
@@ -21,22 +21,28 @@ Press Enter or double-click a routine to open its source in a tab. The source is
 
 The tab uses the console's SQL colors and is read-only until you press **Edit**. **Refresh** reads the source again. On MySQL and MariaDB, the server shows the body only to a user who may see it; for anyone else the tab says the source is not shown.
 
-PostgreSQL does not write a source for an aggregate function, so the tab of an aggregate stays empty.
+PostgreSQL does not write a source for an aggregate function, so the tab of an aggregate says so and reads none.
 
 ## Change a routine
 
 1. Press **Edit** and change the source.
-2. Press **Save…**. A preview shows the statements that will run.
+2. Press **Save…** or Ctrl+S. A preview shows the statements that will run. Save is offered once the source has changes.
 3. Press **Save**.
 
 What Save runs depends on the server:
 
 - **PostgreSQL and MariaDB** replace the routine in one step with `CREATE OR REPLACE`. On PostgreSQL, a `CREATE OR REPLACE` with other argument types creates another overload and keeps the old routine. Changing the return type or the OUT arguments of an existing PostgreSQL function needs a **Drop…** first.
-- **MySQL** has no `CREATE OR REPLACE` for routines, so Save runs `DROP … IF EXISTS` and then the `CREATE`. MySQL commits each of these statements on its own, so they cannot run as one step. If the `CREATE` fails, HooriDB creates the routine again from the source it read and says whether that worked.
+- **MySQL** has no `CREATE OR REPLACE` for routines, so Save drops the routine and creates it again, and MySQL commits each of these statements on its own. To keep a routine from being dropped by a change the server will not take, Save first creates your text under a name of its own (`hooridb_check_…`) and drops that again: an error in the text, a `DEFINER` you may not name, or a function that binary logging keeps from you (error 1419) stops Save there, before anything of the routine changes. Then it runs `DROP … IF EXISTS` and the `CREATE`. If the `CREATE` still fails, HooriDB creates the routine again from the source it read, and where the server does not let you name the definer it had, creates it with you as its definer, and says so. If that fails too, the routine is gone: the tab keeps its source, **Revert** shows it, and **Save…** creates it from there.
+- On MySQL, the `DROP` also removes the privileges granted on that routine alone (`GRANT EXECUTE ON FUNCTION …`), and Save does not grant them again; the preview says so. Because of the `DROP`, Save on MySQL keeps the routine's name and kind: a text that creates a routine of another name or kind is not saved. Create another routine with **New function…** or **New procedure…**.
+- **MySQL and MariaDB** read a routine's body by the `sql_mode` it was created under, which `SHOW CREATE` gives with the source. Save sets the session to that `sql_mode` first, so that the routine keeps it. The routine's `character_set_client` is not set this way: the driver always talks to the server in `utf8mb4`.
 
 A body with `BEGIN … END` and semicolons inside it is sent as one statement, so the editor needs no `DELIMITER`. A `;` after the body and `DELIMITER` lines around it are left out. When the server rejects the statement, its error shows above the editor, and on PostgreSQL the place it names is marked in the source. **Revert** goes back to the source as it was read.
 
-Save runs on a session of its own, opened for the change and closed after it, never on the session the Workspace tree uses. Workspace then reads the routines again. The statements appear in the statement log under the part **Routine**.
+Save runs on a session of its own, opened for the change and closed after it, never on the session the Workspace tree uses. Workspace then reads the routines again. The statements, and the reads of a routine's source, appear in the statement log under the part **Definition**.
+
+While Save or Drop runs, **Cancel** stops the statement that is running. On MySQL, Cancel is turned off once the routine has been dropped, as the change must then run to its end. If you close the tab or HooriDB while a change runs, the change still finishes; if it fails, the notices in Workspace say so, and HooriDB stays open.
+
+A tab with changes that are not saved asks before it closes, and so do closing HooriDB and deleting the connection. Disconnecting does not ask: the changes stay in the tab.
 
 ## Create a routine
 
@@ -48,7 +54,9 @@ Choose **Drop…** in a routine's menu or tab. A dialog shows the `DROP` stateme
 
 ## Run a routine
 
-Choose **Run…** in a routine's menu or tab. The form has a field for each argument, with its type, and a **NULL** box. Type the values as text; the server converts each one to its argument's type. An argument with a default value still needs a value.
+Choose **Run…** in a routine's menu or tab. The form has a field for each argument, with its type, and a **NULL** box. Type the values as text; the server converts each one to its argument's type. An empty field is an empty string only for a text type; for any other type, the form asks for a value or **NULL**. An argument with a default value still needs a value.
+
+On PostgreSQL, **Run…** is turned off, with the reason in its tooltip, for aggregate and window functions, which run over the rows of a query, for trigger functions, for functions whose arguments are of a polymorphic type such as `anyelement` or `anyarray`, and for functions that return `record` or `SETOF record` without OUT arguments, whose columns the query has to name. Call these in a console.
 
 **Run** opens a [console](/docs/features/console) on the routine's connection and database and runs the call there. The values are sent as bound parameters, never written into the statement:
 
