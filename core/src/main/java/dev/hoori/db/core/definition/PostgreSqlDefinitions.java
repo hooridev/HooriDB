@@ -614,12 +614,18 @@ public final class PostgreSqlDefinitions extends DefinitionDialect {
     }
 
     // What a column that the table inherits has of its own, which its table's gives it otherwise:
-    // another default, or none, and NOT NULL. Identity and generation come with the column.
+    // another default, or none, NOT NULL, and another expression of a generated column, which a
+    // partition or a child may have since PostgreSQL 17. Identity comes with the column.
     private List<String> overridden(Column column) {
-      if (!column.identity().isEmpty() || !column.generated().isEmpty()) {
+      var alter = ALTER_ONLY + name + " ALTER COLUMN " + quote(column.name());
+      if (!column.generated().isEmpty()) {
+        return Objects.equals(column.expression(), column.inheritedDefault())
+            ? List.of()
+            : List.of(alter + " SET EXPRESSION AS (" + column.expression() + ")");
+      }
+      if (!column.identity().isEmpty()) {
         return List.of();
       }
-      var alter = ALTER_ONLY + name + " ALTER COLUMN " + quote(column.name());
       var statements = new ArrayList<String>();
       if (!Objects.equals(column.expression(), column.inheritedDefault())) {
         statements.add(

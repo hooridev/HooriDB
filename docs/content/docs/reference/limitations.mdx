@@ -37,6 +37,7 @@ HooriDB is in early development. The list below covers what it cannot do yet.
 ## Export to SQL
 
 - Not exported: PostgreSQL types of their own (enums, domains, composite types), extensions, owners, grants, and foreign tables; MySQL and MariaDB events. A table or policy that uses them, or a role, needs them to exist where the file is read.
+- On PostgreSQL, a partition or a child table whose generated column has an expression other than its table's gets it with `ALTER COLUMN … SET EXPRESSION`, which needs PostgreSQL 17 or later where the file is read.
 - On MySQL and MariaDB, what a view reads is found from the names in its definition, so a view with a common table expression named like another table or view may come out of order.
 - **Data only** reads rows into tables that the structure created, with their triggers:
   - On PostgreSQL, the file turns off each table's triggers and forced row security, and drops constraints that are not valid, before the rows, and puts them back after them. Only the tables' owner, or a superuser, can read it back.
