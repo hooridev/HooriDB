@@ -470,7 +470,8 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
   // Numbers travel as numbers, as a value written into a column of a number goes through floating
   // point where it comes as a text; binary data, bit values and geometries, which the servers send
   // as they store them, as their bytes; anything else as the server's text, which it reads as the
-  // column's type. Both sessions write and read moments in UTC, which repeats no hour.
+  // column's type. Both sessions write and read moments in UTC, which repeats no hour, and take a
+  // zero written into an auto-increment as the zero it is, not as the next value.
   static final class Transfer implements TransferDialect {
 
     private static final Set<String> NUMBERS = Set.of(
@@ -538,10 +539,14 @@ abstract sealed class MySqlFamily implements Dialect permits MariaDb, MySql {
     }
 
     // The source's server waits this long for a batch to be written before it gives up the rows
-    // it sends.
+    // it sends. The session's other modes stay.
     @Override
     public List<String> prepare() {
-      return List.of("SET time_zone = '+00:00'", "SET SESSION net_write_timeout = 600");
+      return List.of(
+          "SET time_zone = '+00:00'",
+          "SET SESSION net_write_timeout = 600",
+          "SET SESSION sql_mode = CONCAT_WS(',', NULLIF(@@SESSION.sql_mode, ''),"
+              + " 'NO_AUTO_VALUE_ON_ZERO')");
     }
 
     // By what the column's EXTRA says, which every version has.

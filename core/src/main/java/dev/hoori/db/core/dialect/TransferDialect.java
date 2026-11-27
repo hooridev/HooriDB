@@ -41,8 +41,8 @@ public interface TransferDialect {
 
   /**
    * The statements that put each session of a copy, the source's and the target's, alike where
-   * the text of a value depends on the session, as the zone a moment is written in, and keep the
-   * source's rows coming while the target writes.
+   * the text of a value depends on the session, as the zone a moment is written in, let the target
+   * take each value as it is given, and keep the source's rows coming while the target writes.
    */
   List<String> prepare();
 

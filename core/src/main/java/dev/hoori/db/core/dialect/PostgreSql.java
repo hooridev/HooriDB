@@ -689,10 +689,12 @@ public final class PostgreSql implements Dialect {
       }
     }
 
-    // A float written with as many digits as name it, also before PostgreSQL 12 wrote them so.
+    // A float written with as many digits as name it, also before PostgreSQL 12 wrote them so,
+    // and money as the C locale writes it, which each server has, as the text of money depends on
+    // the session's monetary locale, which may be another on the other server.
     @Override
     public List<String> prepare() {
-      return List.of("SET extra_float_digits = 3");
+      return List.of("SET extra_float_digits = 3", "SET lc_monetary = 'C'");
     }
 
     // Which every version has, saying NEVER before PostgreSQL 12.
@@ -722,8 +724,8 @@ public final class PostgreSql implements Dialect {
     }
 
     // Each sequence of a column copied into, of an identity or a serial, moved to the column's
-    // highest value where that is within its bounds and its next value is not past it already:
-    // its next value is the one after. A sequence that counts down is left as it is.
+    // highest value, or its lowest where the sequence counts down, where that is within its bounds
+    // and its next value is not past it already: its next value is the one after.
     @Override
     public void written(Connection connection, Provider provider, Table table, List<String> columns)
         throws QueryException {
@@ -752,16 +754,21 @@ public final class PostgreSql implements Dialect {
             return found;
           }));
       for (var sequence : sequences) {
+        var column = provider.quote(sequence.column());
+        var up = "p.seqincrement OPERATOR(pg_catalog.>) 0";
         var set = "SELECT pg_catalog.setval(s.id, x.m)"
             + " FROM (SELECT CAST(? AS pg_catalog.regclass) AS id) s"
             + " JOIN pg_catalog.pg_sequence p ON p.seqrelid OPERATOR(pg_catalog.=) s.id"
             + " CROSS JOIN LATERAL (SELECT pg_catalog.pg_sequence_last_value(s.id) AS v) l"
-            + " CROSS JOIN (SELECT pg_catalog.max(" + provider.quote(sequence.column()) + ") AS m"
-            + " FROM " + qualified + ") x"
-            + " WHERE p.seqincrement OPERATOR(pg_catalog.>) 0"
-            + " AND x.m OPERATOR(pg_catalog.>=) p.seqmin AND x.m OPERATOR(pg_catalog.<=) p.seqmax"
-            + " AND (x.m OPERATOR(pg_catalog.>) l.v"
-            + " OR l.v IS NULL AND x.m OPERATOR(pg_catalog.>=) p.seqstart)";
+            + " CROSS JOIN (SELECT pg_catalog.max(" + column + ") AS hi, pg_catalog.min(" + column
+            + ") AS lo FROM " + qualified + ") b"
+            + " CROSS JOIN LATERAL (SELECT CASE WHEN " + up + " THEN b.hi ELSE b.lo END AS m) x"
+            + " WHERE x.m OPERATOR(pg_catalog.>=) p.seqmin AND x.m OPERATOR(pg_catalog.<=) p.seqmax"
+            + " AND CASE WHEN " + up
+            + " THEN x.m OPERATOR(pg_catalog.>) l.v"
+            + " OR l.v IS NULL AND x.m OPERATOR(pg_catalog.>=) p.seqstart"
+            + " ELSE x.m OPERATOR(pg_catalog.<) l.v"
+            + " OR l.v IS NULL AND x.m OPERATOR(pg_catalog.<=) p.seqstart END";
         Journal.sql(
             provider,
             Purpose.TRANSFER,
