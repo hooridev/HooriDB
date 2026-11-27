@@ -24,7 +24,6 @@ import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.NumberField;
 import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Radio;
-import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.TextField;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.catalog.Container;
@@ -613,12 +612,9 @@ final class ExportDialog {
     return col()
         .w(22 * unit)
         .gap(t.space().s())
-        .child(TextField.withIcon(
-            TextField.textField(filter, "Filter by name", v -> filter = v)
-                .key("export-filter")
-                .label("Filter")
-                .w(22 * unit),
-            Symbol.SEARCH))
+        .child(TextField.searchField(filter, "Filter by name", v -> filter = v)
+            .key("export-filter")
+            .wFull())
         .child(Card.flush(list).wFull().h(14 * unit))
         .child(label(Label.Variant.MUTED, summary.toString()).wrapText().key("export-summary"));
   }

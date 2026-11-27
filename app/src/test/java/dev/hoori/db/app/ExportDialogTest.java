@@ -135,7 +135,7 @@ class ExportDialogTest {
     assertTrue(line(none, "#export-summary").contains("0 of 5 objects checked"), none);
     assertTrue(line(none, "role=button label=\"Export\"").contains("disabled"), none);
     c.run(app, """
-        press #export-filter
+        press role=textbox label="Filter by name"
         type "ord"
         frame
         press role=button label="Check all of public"
