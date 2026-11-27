@@ -206,6 +206,17 @@ class JournalTest {
               throw new SQLException("Key (id)=(1) already exists.", "23505");
             })));
     assertEquals(new Outcome.Failed(Outcome.ROW_WITHHELD), sent.getLast().outcome());
+    // And a copy's, whose rows the server may quote.
+    assertThrows(
+        SQLException.class,
+        () -> Journal.recording(
+            recorder,
+            () -> Journal.rows(
+                Provider.POSTGRESQL, Purpose.FILE, "COPY t FROM stdin", v -> Outcome.DONE, () -> {
+                  throw new SQLException("invalid input syntax: \"token\"", "22P02");
+                })));
+    assertEquals(new Outcome.Failed(Outcome.ROW_WITHHELD), sent.getLast().outcome());
+    assertEquals("COPY t FROM stdin", sent.getLast().text());
   }
 
   @Test

@@ -21,6 +21,7 @@ import dev.hoori.db.core.connection.WorkspaceStore;
 import dev.hoori.db.core.dialect.Dialect;
 import dev.hoori.db.core.dialect.DocumentDialect;
 import dev.hoori.db.core.driver.Driver;
+import dev.hoori.db.core.monitor.Credentials;
 import dev.hoori.db.core.routine.Call;
 import dev.hoori.db.core.secret.Keyring;
 import dev.hoori.db.core.secret.SecretStore;
@@ -36,6 +37,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 
 /** The app's state, which only the handlers change, on the app's thread. */
 final class State {
@@ -700,6 +702,39 @@ final class State {
   /** A console's session begins to close, off the app's thread; {@link #closed} when it has. */
   void closing() {
     closing++;
+  }
+
+  /**
+   * Closes the lane of a session that is no console's, as a server monitor's or a file run's,
+   * which Exit waits for as for a console's: what its closing reports, as a failure to give up what
+   * was open or a connection given up, goes to the notices on the connection, of the part named,
+   * the password, whose copy is taken here and wiped after, masked in it.
+   */
+  void closeSession(Lane lane, String connection, String what, String part, char[] password) {
+    closing();
+    var copy = password == null ? new char[0] : password.clone();
+    var reported = new CompletableFuture<Void>();
+    var closes = app;
+    lane.close(ended -> {
+      try {
+        ended
+            .failure()
+            .ifPresent(f -> closes.post(() -> notice(
+                connection,
+                part,
+                Credentials.without("Closing " + what + " failed: " + Delivery.said(f), copy),
+                true,
+                null)));
+        for (var m : ended.messages()) {
+          var said = Credentials.without(Delivery.warned(m), copy);
+          closes.post(() -> notice(connection, part, said, false, null));
+        }
+      } finally {
+        Arrays.fill(copy, '\0');
+        reported.complete(null);
+      }
+    });
+    app.background("close " + what, reported::get, done -> closed(), e -> closed());
   }
 
   /** A console's session has closed, after what its closing had to say. */
@@ -1419,7 +1454,10 @@ final class State {
     }
   }
 
-  /** The tabs that may hold uncommitted work (consoles and tables), of the connection or all. */
+  /**
+   * What may hold uncommitted work, of the connection or all: consoles, tables, and a file that runs
+   * in one transaction.
+   */
   List<Guard.Guarded> guarded(UUID id) {
     var all = new ArrayList<Guard.Guarded>();
     for (var group : tabs.groups()) {
@@ -1428,6 +1466,10 @@ final class State {
           all.add(g);
         }
       }
+    }
+    var run = dialogs.fileRun;
+    if (run != null && (id == null || id.equals(run.connectionId()))) {
+      all.add(run);
     }
     return all;
   }
@@ -1560,10 +1602,14 @@ final class State {
     var profile = profile(tab.id);
     var title = (profile == null ? "" : name(profile))
         + (tab.database.isEmpty() ? "" : ": " + tab.database);
-    var same = consoles(null).stream()
+    var same = new ArrayList<>(consoles(null).stream()
         .filter(x ->
             x.queryId == null && Objects.equals(x.id, tab.id) && x.database.equals(tab.database))
-        .toList();
+        .toList());
+    // A tab whose window opens is in no group until it has opened, and then in the last.
+    if (!same.contains(tab)) {
+      same.add(tab);
+    }
     return same.size() < 2 ? title : title + " (" + (same.indexOf(tab) + 1) + ")";
   }
 

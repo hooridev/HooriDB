@@ -147,6 +147,21 @@ class FileRunTest {
     assertEquals(FileRun.Kept.ROLLED_BACK, notCommitted.transaction());
     assertEquals(
         new FileRun.Failed(0, "COMMIT", "syntax error"), notCommitted.failures().getFirst());
+
+    // A rollback that fails leaves the transaction in doubt, and says why.
+    var lost = Failure.of(Failure.Kind.CONNECTION_LOST, "I/O error");
+    var unended = new Session(Map.of("SELEC 2", WRONG)) {
+      @Override
+      public Optional<Failure> rollback() {
+        sent.add("rollback");
+        return Optional.of(lost);
+      }
+    };
+    var doubt = run(POSTGRESQL, "INSERT 1;\nSELEC 2;", new FileRun.Options(false, true), unended);
+    assertEquals(FileRun.Kept.IN_DOUBT, doubt.transaction());
+    assertEquals(
+        new FileRun.Failed(0, "ROLLBACK", "I/O error"), doubt.failures().getLast());
+    assertEquals(List.of("begin", "INSERT 1", "SELEC 2", "rollback"), unended.sent);
   }
 
   @Test
@@ -205,6 +220,22 @@ class FileRunTest {
             "end"),
         session.sent);
 
+    // An UNLOCK TABLES without a LOCK TABLES before it commits nothing, unlike DDL but for a
+    // temporary table's.
+    var unlocked = run(
+        MYSQL,
+        "INSERT 1;\nUNLOCK TABLES;\nCREATE TEMPORARY TABLE t (id int);\nSELEC 2;",
+        new FileRun.Options(false, true),
+        new Session(Map.of("SELEC 2", WRONG)));
+    assertEquals(0, unlocked.committedAt());
+    var created = run(
+        MYSQL,
+        "INSERT 1;\nCREATE TABLE t (id int);\nINSERT 2;\nLOCK TABLES t WRITE;\nUNLOCK TABLES;\n"
+            + "UNLOCK TABLES;\nSELEC 3;",
+        new FileRun.Options(false, true),
+        new Session(Map.of("SELEC 3", WRONG)));
+    assertEquals(5, created.committedAt());
+
     // Not without one transaction, and not where the server does not.
     var own = run(MARIADB, text, new FileRun.Options(false, false), new Session(Map.of()));
     assertEquals(0, own.committedAt());
@@ -236,6 +267,18 @@ class FileRunTest {
   }
 
   @Test
+  void onlyRestrictByItsOwnNameIsSkipped() {
+    for (var command : List.of("\\restrict_extra k", "\\RESTRICT k", "\\Unrestrict k")) {
+      var session = new Session(Map.of());
+      var report =
+          run(POSTGRESQL, command + "\nSELECT 1;\n", new FileRun.Options(true, false), session);
+      assertEquals(FileRun.Ending.STOPPED, report.ending(), command);
+      assertEquals(List.of(), session.sent, command);
+      assertEquals(command.split(" ")[0], report.failures().getFirst().statement());
+    }
+  }
+
+  @Test
   void psqlsRestrictIsSkippedAndItsOtherCommandsStopTheRun() {
     var text = "\\restrict k\nSELECT 1;\n\\connect other\nSELECT 2;\n\\unrestrict k\n";
     var session = new Session(Map.of());
@@ -248,6 +291,30 @@ class FileRunTest {
     assertEquals("\\connect", failed.statement());
     assertTrue(failed.message().startsWith("\\connect is a command of PostgreSQL's client"));
     assertEquals(new FileRun.Progress(37, text.length(), 2, 1), report.progress());
+  }
+
+  @Test
+  void theServersWordsOnACopyAreWithheldAsTheyMayQuoteARow() {
+    var copy = "COPY users FROM stdin";
+    var failure = new Failure(
+        Failure.Kind.OTHER,
+        "invalid input syntax for type integer: \"s3cret\"",
+        "22P02",
+        0,
+        0,
+        "",
+        0,
+        0,
+        "",
+        "",
+        "",
+        "COPY users, line 1, column id: \"s3cret\"");
+    var report = run(
+        POSTGRESQL,
+        copy + ";\ns3cret\tx\n\\.\n",
+        new FileRun.Options(false, false),
+        new Session(Map.of(copy, failure)));
+    assertEquals(List.of(new FileRun.Failed(1, copy, Outcome.ROW_WITHHELD)), report.failures());
   }
 
   @Test
@@ -329,5 +396,54 @@ class FileRunTest {
     assertEquals(FileRun.Kept.ROLLED_BACK, report[0].transaction());
     assertEquals(List.of("begin", "SELECT pg_sleep(60)", "rollback", "end"), session.sent);
     assertTrue(report[0].failures().isEmpty());
+  }
+
+  @Test
+  void aCancelAsTheFileEndsRollsBackInPlaceOfTheCommit() {
+    var session = new Session(Map.of());
+    var holder = new FileRun[1];
+    // The file's end, read after its last statement ran, is where the cancel comes: beyond the
+    // first window, which held the statement.
+    var text = new StringReader("SELECT 1;\n" + "-- nothing more\n".repeat(10_000)) {
+      @Override
+      public int read(char[] into, int from, int length) throws IOException {
+        int read = super.read(into, from, length);
+        if (read < 0) {
+          holder[0].cancel();
+        }
+        return read;
+      }
+    };
+    holder[0] = new FileRun(
+        () -> new StatementReader(text, POSTGRESQL, -1),
+        POSTGRESQL,
+        new FileRun.Options(false, true),
+        progress -> {});
+    var report = holder[0].run(session);
+    assertEquals(FileRun.Ending.CANCELLED, report.ending());
+    assertEquals(FileRun.Kept.ROLLED_BACK, report.transaction());
+    assertEquals(List.of("begin", "SELECT 1", "rollback", "end"), session.sent);
+    assertFalse(Thread.interrupted(), "the cancel's interrupt was cleared");
+  }
+
+  @Test
+  void aCancelOnceTheCommitBeganChangesNothing() {
+    var holder = new FileRun[1];
+    var session = new Session(Map.of()) {
+      @Override
+      public Optional<Failure> commit() {
+        holder[0].cancel();
+        assertFalse(Thread.currentThread().isInterrupted(), "the commit is not interrupted");
+        return super.commit();
+      }
+    };
+    holder[0] = new FileRun(
+        () -> new StatementReader(new StringReader("SELECT 1;"), POSTGRESQL, -1),
+        POSTGRESQL,
+        new FileRun.Options(false, true),
+        progress -> {});
+    var report = holder[0].run(session);
+    assertEquals(FileRun.Ending.RAN, report.ending());
+    assertEquals(FileRun.Kept.COMMITTED, report.transaction());
   }
 }

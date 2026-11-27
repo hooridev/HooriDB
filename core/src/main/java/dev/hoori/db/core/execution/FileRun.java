@@ -1,6 +1,8 @@
 package dev.hoori.db.core.execution;
 
+import dev.hoori.db.core.Texts;
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.dialect.ClientDialect;
 import dev.hoori.db.core.log.Journal;
 import dev.hoori.db.core.log.Outcome;
 import dev.hoori.db.core.log.Purpose;
@@ -117,8 +119,10 @@ public final class FileRun {
    * transaction.
    *
    * @param committedAt in one transaction, the line of the last statement that ran at which the
-   *     server committed by itself, as {@link TransactionControl#commits} finds one, so that what
-   *     ran up to it stays whatever became of the transaction; 0 where none ran
+   *     server committed by itself, as {@link TransactionControl#commits} finds one, or an {@code
+   *     UNLOCK TABLES} where the file locked tables, so that what ran up to it stays whatever
+   *     became of the transaction; 0 where none ran
+   *
    */
   public record Report(
       Ending ending,
@@ -173,10 +177,12 @@ public final class FileRun {
   private StatementReader reader; // under the lock
   private volatile boolean cancelled;
   private boolean interrupted; // the cancel interrupted the run, under the lock
+  private boolean settling; // the run ends, which a cancel no longer changes; under the lock
   private final List<Failed> failures = new ArrayList<>(); // the first LISTED failures
   private long statements; // as Progress counts them
   private long failed;
   private long committedAt; // as Report says it
+  private boolean locked; // the file locked tables, as MySQL's LOCK TABLES does
 
   /**
    * A run of the file, with the provider's lexical rules, which tells {@code progress} how far it
@@ -201,6 +207,9 @@ public final class FileRun {
     synchronized (lock) {
       if (cancelled) {
         return;
+      }
+      if (settling) {
+        return; // too late: the commit or rollback goes on, within its bound
       }
       cancelled = true;
       if (reader != null) {
@@ -241,6 +250,9 @@ public final class FileRun {
       }
       ending = steps(target, file);
       last = progress(file);
+      if (settle() && ending == Ending.RAN) {
+        ending = Ending.CANCELLED; // after the last step, before the commit
+      }
       calm();
       if (options.transaction()) {
         kept = end(target, ending == Ending.RAN);
@@ -324,7 +336,7 @@ public final class FileRun {
 
   // A statement of the file: run, or refused where it would end the run's own transaction. One
   // at which the server commits by itself is noted, failed or not, as the server commits before
-  // it runs the statement.
+  // it runs the statement: an UNLOCK TABLES only where the file locked tables.
   private Optional<Failure> statement(Target target, StatementReader.Sql sql) {
     if (options.transaction() && TransactionControl.in(sql.sql(), provider)) {
       return Optional.of(Failure.of(
@@ -333,9 +345,15 @@ public final class FileRun {
               + " would end: the run stops, and what ran is rolled back. Run the file without one"
               + " transaction to have it keep its own."));
     }
+    var locks = TransactionControl.tableLocks(sql.sql(), provider);
+    boolean commits = TransactionControl.commits(sql.sql(), provider)
+        || locks == ClientDialect.TableLocks.UNLOCKS && locked;
     var failure = target.run(sql.sql());
-    if (options.transaction() && TransactionControl.commits(sql.sql(), provider)) {
+    if (options.transaction() && commits) {
       committedAt = sql.line();
+    }
+    if (locks != ClientDialect.TableLocks.KEEPS) {
+      locked = locks == ClientDialect.TableLocks.LOCKS;
     }
     return failure;
   }
@@ -382,18 +400,31 @@ public final class FileRun {
       if (failure.isEmpty()) {
         kept = Kept.COMMITTED;
       } else {
-        list(0, "COMMIT", failure.get().message());
+        // Its words without its detail, which may quote a row, as a deferred constraint's does.
+        list(0, "COMMIT", said(failure.get()));
         kept =
             failure.get().kind() == Failure.Kind.CONNECTION_LOST ? Kept.IN_DOUBT : Kept.ROLLED_BACK;
       }
     }
-    if (kept == Kept.ROLLED_BACK && target.rollback().isPresent()) {
-      kept = Kept.IN_DOUBT;
+    if (kept == Kept.ROLLED_BACK) {
+      var failure = target.rollback();
+      if (failure.isPresent()) {
+        list(0, "ROLLBACK", message(failure.get()));
+        kept = Kept.IN_DOUBT;
+      }
     }
     if (kept != Kept.IN_DOUBT) {
       target.end(); // a session that fails here is closed after the run anyway
     }
     return kept;
+  }
+
+  // From now on a cancel changes nothing; whether one came before.
+  private boolean settle() {
+    synchronized (lock) {
+      settling = true;
+      return cancelled;
+    }
   }
 
   // Clears the interrupt of a cancel, which must not reach what ends the transaction.
@@ -417,19 +448,21 @@ public final class FileRun {
   }
 
   // Lists the failure of a step. A command of the client shows by its name alone, as its line,
-  // which no server read, may give another's password.
+  // which no server read, may give another's password; a copy's without the server's words,
+  // which may quote a row.
   private void listStep(StatementReader.Step step, Failure failure) {
     switch (step) {
-      case StatementReader.Sql sql -> listStatement(sql.sql(), sql.line(), failure);
-      case StatementReader.Copy copy -> listStatement(copy.sql(), copy.line(), failure);
+      case StatementReader.Sql sql -> listStatement(sql.sql(), sql.line(), failure, false);
+      case StatementReader.Copy copy -> listStatement(copy.sql(), copy.line(), failure, true);
       case StatementReader.Command command ->
         list(command.line(), "\\" + command.name(), message(failure));
     }
   }
 
   // Lists the failure of a statement that begins on the line, at the line the server names where
-  // it does, its passwords masked.
-  private void listStatement(String sql, long line, Failure failure) {
+  // it does, its passwords masked; the server's words withheld where they may quote rows that the
+  // statement copied in from the file, which may hold credentials.
+  private void listStatement(String sql, long line, Failure failure, boolean rows) {
     long at = line
         + failure
             .place(sql, provider)
@@ -437,8 +470,15 @@ public final class FileRun {
                 sql.substring(0, place.start()).chars().filter(c -> c == '\n').count())
             .orElse(0L);
     var masked = Secrets.masked(sql, provider);
-    var message = masked.equals(sql) ? message(failure) : Outcome.WITHHELD;
-    list(at, start(masked), message);
+    String message;
+    if (!masked.equals(sql)) {
+      message = Outcome.WITHHELD;
+    } else if (rows && !failure.state().isEmpty()) {
+      message = Outcome.ROW_WITHHELD; // the server's, not the file's own failure
+    } else {
+      message = message(failure);
+    }
+    list(at, Texts.start(masked, SHOWN), message);
   }
 
   // Lists a failure, where the report has room for it.
@@ -448,24 +488,21 @@ public final class FileRun {
     }
   }
 
-  // The first SHOWN chars of the text, without the first of a surrogate pair alone.
-  private static String start(String text) {
-    if (text.length() <= SHOWN) {
-      return text;
-    }
-    return text.substring(0, Character.isHighSurrogate(text.charAt(SHOWN - 1)) ? SHOWN - 1 : SHOWN);
+  // The server's words, with its detail where it gives one.
+  private static String message(Failure failure) {
+    var said = said(failure);
+    return failure.detail().isBlank() ? said : said + "\n" + failure.detail();
   }
 
-  // The server's words, with its detail where it gives one; what HooriDB says where it gives none.
-  private static String message(Failure failure) {
-    var message = failure.message().isBlank()
+  // The server's words without its detail; what HooriDB says where it gives none.
+  private static String said(Failure failure) {
+    return failure.message().isBlank()
         ? switch (failure.kind()) {
           case CANCELLED -> "Cancelled";
           case CONNECTION_LOST -> "The connection was lost";
           default -> "Failed";
         }
         : failure.message();
-    return failure.detail().isBlank() ? message : message + "\n" + failure.detail();
   }
 
   /**
@@ -503,7 +540,7 @@ public final class FileRun {
       try {
         // The reader stops a copy that is cancelled, as the run cancels it, so that the driver
         // ends the copy on the server; past Query's grace the connection is given up.
-        Journal.sql(
+        Journal.rows(
             provider,
             Purpose.FILE,
             sql,
@@ -546,8 +583,20 @@ public final class FileRun {
     }
 
     @Override
+    // Its failure's words withheld in the log, as a deferred constraint's may quote a row.
     public Optional<Failure> commit() {
-      return step(Journal.COMMIT, connection::commit);
+      try {
+        Journal.callWithheld(
+            Purpose.TRANSACTION,
+            Journal.COMMIT,
+            () -> Query.within(connection, provider, Execution.ENDING, () -> {
+              connection.commit();
+              return null;
+            }));
+        return Optional.empty();
+      } catch (QueryException e) {
+        return Optional.of(failure(e));
+      }
     }
 
     @Override

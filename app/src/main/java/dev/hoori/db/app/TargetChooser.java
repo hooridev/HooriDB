@@ -1,5 +1,6 @@
 package dev.hoori.db.app;
 
+import com.rethinkj.ui.kit.ComboBox;
 import com.rethinkj.ui.kit.Menu;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Workspace;
@@ -22,32 +23,73 @@ final class TargetChooser {
 
   static List<Menu.Item> items(
       State s, Workspace.Language language, UUID last, Consumer<UUID> choose) {
-    var first = new ArrayList<Menu.Item>();
-    var connected = new ArrayList<Menu.Item>();
-    var others = new ArrayList<Menu.Item>();
+    var items = new ArrayList<Menu.Item>();
+    var choices = choices(s, language, last);
+    for (var choice : choices) {
+      if (choice.after() && !items.isEmpty()) {
+        items.add(Menu.separator());
+      }
+      var id = choice.profile().id();
+      var item = Menu.item(State.name(choice.profile()), () -> choose.accept(id))
+          .leading(() -> ConnectionColors.mark(choice.profile().color()))
+          .checked(id.equals(last));
+      items.add(choice.detail().isEmpty() ? item : item.shortcut(choice.detail()));
+    }
+    return items;
+  }
+
+  /**
+   * The items of a combo box of the connections, in the order and with the marks of {@link
+   * #items}, the one given first: as Run SQL file chooses where a file runs.
+   */
+  static ComboBox.Item item(State s, UUID id) {
+    var profile = s.profile(id);
+    if (profile == null) {
+      return ComboBox.item("A deleted connection");
+    }
+    var item =
+        ComboBox.item(State.name(profile)).leading(() -> ConnectionColors.mark(profile.color()));
+    var detail = detail(s, profile, s.catalog.connected(id));
+    return detail.isEmpty() ? item : item.detail(detail);
+  }
+
+  /** The connections of the language in the order of {@link #items}, the last target first. */
+  static List<UUID> order(State s, Workspace.Language language, UUID last) {
+    return choices(s, language, last).stream().map(c -> c.profile().id()).toList();
+  }
+
+  /**
+   * A connection as the chooser lists it: what shows at its right, and whether a separator goes
+   * before it, as before the first that is not connected.
+   */
+  private record Choice(ConnectionProfile profile, String detail, boolean after) {}
+
+  private static List<Choice> choices(State s, Workspace.Language language, UUID last) {
+    var first = new ArrayList<Choice>();
+    var connected = new ArrayList<Choice>();
+    var others = new ArrayList<Choice>();
     for (var profile : s.profiles) {
       if (Workspace.Language.of(profile.provider()) != language) {
         continue;
       }
       boolean live = s.catalog.connected(profile.id());
-      var item = item(s, profile, live, choose).checked(profile.id().equals(last));
+      var detail = detail(s, profile, live);
       if (profile.id().equals(last)) {
-        first.add(item);
+        first.add(new Choice(profile, detail, false));
+      } else if (live) {
+        connected.add(new Choice(profile, detail, false));
       } else {
-        (live ? connected : others).add(item);
+        others.add(new Choice(profile, detail, others.isEmpty()));
       }
     }
-    var items = new ArrayList<>(first);
-    items.addAll(connected);
-    if (!items.isEmpty() && !others.isEmpty()) {
-      items.add(Menu.separator());
-    }
-    items.addAll(others);
-    return items;
+    var all = new ArrayList<>(first);
+    all.addAll(connected);
+    all.addAll(others);
+    return all;
   }
 
-  private static Menu.Item item(
-      State s, ConnectionProfile profile, boolean live, Consumer<UUID> choose) {
+  // Its folder path, and whether it is read-only and connected.
+  private static String detail(State s, ConnectionProfile profile, boolean live) {
     var detail = new ArrayList<String>();
     var path = s.workspace().path(profile.id());
     if (path != null && !path.isEmpty()) {
@@ -59,9 +101,6 @@ final class TargetChooser {
     if (!live) {
       detail.add("Not connected");
     }
-    var id = profile.id();
-    var item = Menu.item(State.name(profile), () -> choose.accept(id))
-        .leading(() -> ConnectionColors.mark(profile.color()));
-    return detail.isEmpty() ? item : item.shortcut(String.join(" · ", detail));
+    return String.join(" · ", detail);
   }
 }

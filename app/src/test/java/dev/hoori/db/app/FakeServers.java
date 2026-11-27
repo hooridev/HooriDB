@@ -349,6 +349,14 @@ final class FakeServers implements Servers {
     return this;
   }
 
+  private final Map<Integer, Failure> closingFails = new ConcurrentHashMap<>();
+
+  /** Closing the link of the number fails so, as a connection that breaks as it closes does. */
+  FakeServers failsAtClose(int link, Failure failure) {
+    closingFails.put(link, failure);
+    return this;
+  }
+
   /** MariaDB's and MySQL's deadlock, which rolls the whole transaction back. */
   static Failure deadlock() {
     return new Failure(
@@ -2325,7 +2333,9 @@ final class FakeServers implements Servers {
     @Override
     public Abandoned close() {
       closed.add(host + (database == null ? "" : "/" + database));
-      return giveUp();
+      var left = giveUp();
+      var failing = closingFails.get(number);
+      return failing == null ? left : new Abandoned(Optional.of(failing), left.messages());
     }
 
     @Override

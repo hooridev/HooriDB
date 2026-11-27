@@ -36,12 +36,29 @@ public interface ClientDialect {
 
   /**
    * Whether the server commits the open transaction by itself as it runs a statement, by its words
-   * as for {@link #controlsTransaction}, other than as it commits DDL, which {@link
-   * dev.hoori.db.core.connection.Capability#TRANSACTIONAL_DDL} tells: as MySQL's {@code LOCK
+   * as for {@link #controlsTransaction}: as MySQL's DDL, where {@link
+   * dev.hoori.db.core.connection.Capability#TRANSACTIONAL_DDL} is not had, and its {@code LOCK
    * TABLES}, which its dumps write around each table's rows. A run of a file in one transaction
-   * runs it, and says that what ran up to it stays.
+   * runs it, and says that what ran up to it stays. Not {@code UNLOCK TABLES}, which commits only
+   * where the session locked tables, as {@link #tableLocks} tells.
    */
   boolean commitsImplicitly(List<String> words);
+
+  /** What a statement does to the tables that the session locked, as MySQL's LOCK TABLES. */
+  enum TableLocks {
+    /** It leaves them as they are. */
+    KEEPS,
+    /** It locks tables, those it names alone. */
+    LOCKS,
+    /** It unlocks them, which commits the open transaction where it held any. */
+    UNLOCKS
+  }
+
+  /**
+   * What the statement does to the tables the session locked, by its words as for {@link
+   * #controlsTransaction}; {@link TableLocks#KEEPS} where locking them commits nothing.
+   */
+  TableLocks tableLocks(List<String> words);
 
   /**
    * Whether a statement copies rows from the client, as PostgreSQL's {@code COPY … FROM STDIN}, by

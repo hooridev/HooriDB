@@ -3,9 +3,11 @@ package dev.hoori.db.core.sql;
 import static dev.hoori.db.core.connection.Provider.MARIADB;
 import static dev.hoori.db.core.connection.Provider.MYSQL;
 import static dev.hoori.db.core.connection.Provider.POSTGRESQL;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.hoori.db.core.dialect.ClientDialect.TableLocks;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -58,6 +60,9 @@ class TransactionControlTest {
         // Only reads it, to set it back later.
         "SET @OLD_AUTOCOMMIT=@@AUTOCOMMIT",
         "SET autocommit_x = @@autocommit",
+        // A user variable of that name.
+        "SET @autocommit = 0",
+        "SET @autocommit := 1, @x = @@autocommit",
         "LOCK TABLES t WRITE",
         "CREATE PROCEDURE p() BEGIN COMMIT; END")) {
       assertFalse(TransactionControl.in(sql, MYSQL), sql);
@@ -68,7 +73,18 @@ class TransactionControlTest {
         "BEGIN NOT ATOMIC SAVEPOINT s; ROLLBACK TO SAVEPOINT s; END", MARIADB));
     assertFalse(TransactionControl.in(
         "BEGIN NOT ATOMIC SAVEPOINT s; ROLLBACK WORK TO s; SET @a = @@autocommit; END", MARIADB));
+    // As are its other compound statements, a label's too.
+    assertFalse(TransactionControl.in("IF TRUE THEN SELECT 1; END IF", MARIADB));
+    assertFalse(TransactionControl.in("l: LOOP LEAVE l; END LOOP l", MARIADB));
     for (var sql : List.of(
+        "IF TRUE THEN COMMIT; END IF",
+        "IF FALSE THEN SELECT 1; ELSE ROLLBACK; END IF",
+        "CASE WHEN 1 THEN SET autocommit = 1; END CASE",
+        "l: LOOP COMMIT; LEAVE l; END LOOP l",
+        "REPEAT START TRANSACTION; UNTIL TRUE END REPEAT",
+        "WHILE FALSE DO XA END 'x'; END WHILE",
+        "FOR i IN 1..2 DO COMMIT; END FOR",
+        "outer: BEGIN NOT ATOMIC COMMIT; END outer",
         "BEGIN NOT ATOMIC COMMIT; END",
         "BEGIN NOT ATOMIC INSERT INTO t VALUES (1); ROLLBACK; END",
         "BEGIN NOT ATOMIC START TRANSACTION; END",
@@ -80,12 +96,19 @@ class TransactionControlTest {
   }
 
   @Test
-  void mySqlsStatementsThatCommitByThemselvesBesidesDdl() {
+  void mySqlsStatementsThatCommitByThemselves() {
     for (var provider : List.of(MYSQL, MARIADB)) {
       for (var sql : List.of(
           "LOCK TABLES `t` WRITE",
           "lock table t read, u write",
-          "UNLOCK TABLES",
+          "CREATE TABLE user (id int)",
+          "/*!50001 CREATE ALGORITHM=UNDEFINED VIEW v AS SELECT 1 */",
+          "CREATE OR REPLACE TABLE t (id int)",
+          "ALTER TABLE t ADD c int",
+          "DROP TABLE IF EXISTS t",
+          "RENAME TABLE a TO b",
+          "TRUNCATE t",
+          "CREATE INDEX i ON t (c)",
           "GRANT SELECT ON db.* TO 'u'@'%'",
           "REVOKE ALL ON db.* FROM u",
           "CREATE USER u IDENTIFIED BY 'x'",
@@ -110,7 +133,11 @@ class TransactionControlTest {
           "INSERT INTO t VALUES (1)",
           "SELECT 'LOCK TABLES'",
           "ANALYZE SELECT * FROM t",
-          "CREATE TABLE user (id int)",
+          // Only where tables were locked, which the run keeps track of.
+          "UNLOCK TABLES",
+          "CREATE TEMPORARY TABLE t (id int)",
+          "CREATE OR REPLACE TEMPORARY TABLE t (id int)",
+          "DROP TEMPORARY TABLE IF EXISTS t",
           "SET ROLE r",
           "LOAD DATA INFILE 'x' INTO TABLE t")) {
         assertFalse(TransactionControl.commits(sql, provider), provider + ": " + sql);
@@ -119,5 +146,16 @@ class TransactionControlTest {
     // PostgreSQL commits only where the transaction ends.
     assertFalse(TransactionControl.commits("LOCK TABLE t", POSTGRESQL));
     assertFalse(TransactionControl.commits("GRANT SELECT ON t TO u", POSTGRESQL));
+    assertFalse(TransactionControl.commits("CREATE TABLE t (id int)", POSTGRESQL));
+  }
+
+  @Test
+  void whatAStatementDoesToTheTablesLocked() {
+    assertEquals(TableLocks.LOCKS, TransactionControl.tableLocks("LOCK TABLES t WRITE", MYSQL));
+    assertEquals(TableLocks.UNLOCKS, TransactionControl.tableLocks("unlock table", MARIADB));
+    assertEquals(
+        TableLocks.UNLOCKS, TransactionControl.tableLocks("/*!40000 UNLOCK TABLES */", MYSQL));
+    assertEquals(TableLocks.KEEPS, TransactionControl.tableLocks("SELECT 'UNLOCK TABLES'", MYSQL));
+    assertEquals(TableLocks.KEEPS, TransactionControl.tableLocks("LOCK TABLE t", POSTGRESQL));
   }
 }

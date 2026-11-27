@@ -15,6 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.rethinkj.ui.App;
 import com.rethinkj.ui.kit.Menu;
 import dev.hoori.db.core.connection.ConnectionProfile;
+import dev.hoori.db.core.execution.Failure;
 import dev.hoori.db.core.execution.FileRun;
 import dev.hoori.db.core.execution.Result;
 import dev.hoori.db.core.log.Purpose;
@@ -208,7 +209,7 @@ class FileRunDialogTest {
     var rolled = c.tree("rolled");
     assertTrue(
         rolled.contains("The transaction was rolled back, but what ran up to line 3 stays, as the"
-            + " server committed it by itself there, and so does DDL that ran after it."),
+            + " server committed it by itself there."),
         rolled);
   }
 
@@ -249,12 +250,152 @@ class FileRunDialogTest {
     CatalogTreeTest.eventually(
         () -> c.servers.calls.contains("run " + PG + " SELECT pg_sleep(60)"));
     c.run(app, menu("shop-prod", "Disconnect") + SETTLE + "snap disconnected\n");
+    // Ended hidden, it says so in a desktop notification, whose click shows the dialog.
+    assertTrue(Files.readString(dir.resolve("out").resolve("disconnected.notifications.txt"))
+        .contains("\"sleep.sql: Cancelled\""));
+    assertFalse(c.tree("disconnected").contains("role=dialog"), c.tree("disconnected"));
+    c.run(
+        app,
+        "notification click \"sleep.sql: Cancelled\"\nawait\nframe\n" + OPENS
+            + "snap disconnected\n");
     var disconnected = c.tree("disconnected");
     assertTrue(disconnected.contains("Cancelled as its connection ended"), disconnected);
     // What failed is masked, though the session closed before the run said so.
     assertTrue(disconnected.contains("label=\"Failed statements\""), disconnected);
     c.noPassword();
     held.countDown();
+  }
+
+  /** A run in one transaction, hidden as it holds at its statement, on the second link. */
+  private App<State> runningInOne() throws Exception {
+    var app = chosen(file("sleep.sql", "SELECT pg_sleep(60);\n"));
+    c.run(
+        app,
+        "press label=\"In one transaction\"\n" + OPENS + "press role=button label=\"Run\"\n" + OPENS
+            + "press role=button label=\"Hide\"\n" + OPENS);
+    CatalogTreeTest.eventually(
+        () -> c.servers.calls.contains("run " + PG + " SELECT pg_sleep(60)"));
+    return app;
+  }
+
+  @Test
+  void exitAsksBeforeItCancelsARunInOneTransaction() throws Exception {
+    var held = c.servers.hold("run " + PG + " SELECT pg_sleep(60)");
+    var app = runningInOne();
+    c.run(app, "snap running\n");
+    // The status line counts it as it counts a console's transaction.
+    assertTrue(
+        c.tree("running").contains("A file that runs in one transaction holds uncommitted work"),
+        c.tree("running"));
+    c.run(app, ConsoleTransactions.EXIT + OPENS + "snap asked\n");
+    var asked = c.tree("asked");
+    assertTrue(
+        asked.contains("sleep.sql runs in one transaction on shop-prod, shop. Cancel it, which"
+            + " rolls back what it ran, and HooriDB closes?"),
+        asked);
+    c.run(app, "press role=button label=\"Keep running\"\n" + OPENS + "snap kept\n");
+    var kept = c.tree("kept");
+    assertFalse(kept.contains("Cancel the run?"), kept);
+    assertTrue(kept.contains("role=progressbar"), kept); // the dialog shows, as it asked there
+    assertFalse(app.windows().all().isEmpty());
+    assertFalse(c.servers.interrupted.toString().contains("pg_sleep"));
+    c.run(
+        app,
+        "press role=button label=\"Hide\"\n" + OPENS + ConsoleTransactions.EXIT + OPENS
+            + "press role=button label=\"Cancel the run\"\nframe\n" + SETTLE);
+    assertTrue(app.windows().all().isEmpty(), "HooriDB closed");
+    assertTrue(
+        c.servers.interrupted.toString().contains("SELECT pg_sleep(60)"),
+        c.servers.interrupted.toString());
+    assertTrue(c.servers.calls.contains("run " + PG + " ROLLBACK"), c.servers.calls.toString());
+    held.countDown();
+  }
+
+  @Test
+  void disconnectingAsksBeforeItCancelsARunInOneTransaction() throws Exception {
+    var held = c.servers.hold("run " + PG + " SELECT pg_sleep(60)");
+    var app = runningInOne();
+    c.run(app, menu("shop-prod", "Disconnect") + OPENS + "snap asked\n");
+    assertTrue(c.tree("asked").contains("and shop-prod disconnects?"), c.tree("asked"));
+    // The press takes effect in the next frame, before the run can end.
+    c.run(app, "press role=button label=\"Cancel the run\"\nframe\n" + SETTLE + "snap cancelled\n");
+    var cancelled = c.tree("cancelled");
+    assertTrue(cancelled.contains("Cancelled as its connection ended"), cancelled);
+    assertTrue(cancelled.contains("The transaction was rolled back"), cancelled);
+    assertFalse(app.state().catalog.connected(SHOP.id()));
+    held.countDown();
+  }
+
+  @Test
+  void aSessionThatFailsToCloseIsANoticeAndExitStays() throws Exception {
+    // The run's own session is the second link.
+    c.servers.failsAtClose(2, FakeServers.serverError(Failure.Kind.OTHER, "the socket broke"));
+    var held = c.servers.hold("run " + PG + " SELECT pg_sleep(60)");
+    var app = chosen(file("sleep.sql", "SELECT pg_sleep(60);\n"));
+    c.run(
+        app,
+        "press role=button label=\"Run\"\n" + OPENS + "press role=button label=\"Hide\"\n" + OPENS);
+    CatalogTreeTest.eventually(
+        () -> c.servers.calls.contains("run " + PG + " SELECT pg_sleep(60)"));
+    c.run(app, ConsoleTransactions.EXIT + SETTLE + "snap stayed\n");
+    var stayed = c.tree("stayed");
+    assertFalse(app.windows().all().isEmpty(), "stayed open");
+    assertTrue(
+        ConsoleTest.near(stayed, "#notice-1")
+            .contains("Closing the file's session failed: the socket broke"),
+        stayed);
+    assertTrue(stayed.contains("HooriDB stayed open"), stayed);
+    held.countDown();
+  }
+
+  @Test
+  void anEndInDoubtIsANotice() throws Exception {
+    c.servers.statement(
+        "ROLLBACK",
+        List.of(FakeServers.serverError(Failure.Kind.CONNECTION_LOST, "the server went away")));
+    var app = chosen(file("tx.sql", "INSERT INTO t VALUES (1);\nSELEC 1;\n"));
+    c.run(
+        app,
+        "press label=\"In one transaction\"\n" + OPENS + "press role=button label=\"Run\"\n"
+            + SETTLE + "snap doubt\n");
+    var doubt = c.tree("doubt");
+    assertTrue(doubt.contains("The transaction's end failed."), doubt);
+    assertTrue(
+        ConsoleTest.near(doubt, "#notice-1")
+            .contains("The end of the file's transaction failed: the server went away"),
+        doubt);
+  }
+
+  @Test
+  void cancelGivesUpARunWhoseSessionStillConnects() throws Exception {
+    var app = chosen(file("one.sql", "INSERT INTO t VALUES (1);\n"));
+    // The tree's link is open, the run's waits.
+    var opening = c.servers.hold("open " + PG + "/shop");
+    c.run(
+        app,
+        "press role=button label=\"Run\"\n" + OPENS + "press role=button label=\"Cancel run\"\n"
+            + "frame\n" + SETTLE + "snap given\n");
+    var given = c.tree("given");
+    assertTrue(given.contains("The run was given up before it began."), given);
+    opening.countDown();
+    c.run(app, SETTLE);
+    assertFalse(c.servers.calls.contains("run " + PG + " INSERT INTO t VALUES (1)"));
+  }
+
+  @Test
+  void theConnectionsAreChosenAsAQuerysTarget() throws Exception {
+    var stock = INVENTORY.withName("stock");
+    var app = c.app(SHOP, stock);
+    c.ready(app, SHOP, stock);
+    c.run(app, START + open("shop-prod") + SETTLE + menu("shop-prod", CatalogTree.FILE_RUN));
+    c.run(app, "press #connection\n" + OPENS + "snap connections\n");
+    var connections = c.tree("connections");
+    // Every connection of SQL, the chosen one first, and one not connected marked so.
+    var options = connections.lines().filter(l -> l.contains("role=option")).toList();
+    assertEquals(2, options.size(), connections);
+    assertTrue(options.getFirst().contains("label=\"shop-prod\""), connections);
+    assertTrue(options.getLast().contains("label=\"stock\""), connections);
+    assertTrue(connections.contains("Not connected"), connections);
   }
 
   @Test

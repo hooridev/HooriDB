@@ -15,12 +15,17 @@ import dev.hoori.db.core.connect.Connector;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Outcome;
+import dev.hoori.db.core.log.Purpose;
+import dev.hoori.db.core.log.Sent;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -28,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** Files run on real servers: the dumps of their own tools, failures, transactions, a cancel. */
 class FileRunServerTest {
@@ -220,14 +226,52 @@ class FileRunServerTest {
     }
   }
 
-  @Test
-  void oneTransactionRollsBackWhatRanBeforeACompoundStatementThatCommits() throws Exception {
+  @ParameterizedTest
+  @MethodSource("mysqlFamily")
+  void oneTransactionTellsThatDdlCommittedWhatRanBeforeButNotAnUnlockAlone(Provider provider)
+      throws Exception {
+    var table = "file_run_ddl";
+    try (var writer = open(provider)) {
+      execute(
+          writer,
+          "DROP TABLE IF EXISTS " + table + ", file_run_ddl_made",
+          "CREATE TABLE " + table + " (id integer)");
+    }
+    var unlocked = "INSERT INTO " + table + " VALUES (1);\nUNLOCK TABLES;\n" + "INSERT INTO "
+        + table + " VALUES ('x');\n";
+    var made = "INSERT INTO " + table + " VALUES (2);\nCREATE TABLE file_run_ddl_made (id int);\n"
+        + "INSERT INTO " + table + " VALUES ('x');\n";
+    try (var connection = open(provider);
+        var check = open(provider)) {
+      var tx = new FileRun.Options(false, true);
+      var report = run(connection, provider, file("unlocked.sql", unlocked), tx);
+      assertEquals(FileRun.Kept.ROLLED_BACK, report.transaction());
+      assertEquals(0, report.committedAt());
+      // The UNLOCK TABLES committed nothing, as another session sees.
+      assertEquals(0, selectLong(check, "SELECT count(*) FROM " + table));
+      var ddl = run(connection, provider, file("made.sql", made), tx);
+      assertEquals(FileRun.Kept.ROLLED_BACK, ddl.transaction());
+      assertEquals(2, ddl.committedAt());
+      // The CREATE TABLE committed the insert before it.
+      assertEquals(2, selectLong(check, "SELECT max(id) FROM " + table));
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "BEGIN NOT ATOMIC COMMIT; END",
+        "IF TRUE THEN COMMIT; END IF",
+        "l: LOOP COMMIT; LEAVE l; END LOOP l"
+      })
+  void oneTransactionRollsBackWhatRanBeforeACompoundStatementThatCommits(String compound)
+      throws Exception {
     var table = "file_run_compound";
     try (var writer = open(MARIADB)) {
       execute(writer, "DROP TABLE IF EXISTS " + table, "CREATE TABLE " + table + " (id integer)");
     }
     var text = "INSERT INTO " + table + " VALUES (1);\n"
-        + "DELIMITER //\nBEGIN NOT ATOMIC COMMIT; END//\nDELIMITER ;\n"
+        + "DELIMITER //\n" + compound + "//\nDELIMITER ;\n"
         + "INSERT INTO " + table + " VALUES (2);\n";
     try (var connection = open(MARIADB)) {
       var report =
@@ -236,6 +280,7 @@ class FileRunServerTest {
       assertEquals(FileRun.Kept.ROLLED_BACK, report.transaction());
       assertEquals(3, report.failures().getFirst().line());
     }
+    // Another session finds nothing of the file: the compound statement did not commit the first.
     try (var check = open(MARIADB)) {
       assertEquals(0, selectLong(check, "SELECT count(*) FROM " + table));
     }
@@ -303,6 +348,29 @@ class FileRunServerTest {
       assertEquals(FileRun.Ending.CANCELLED, report[0].ending());
       assertEquals(1, report[0].progress().statements());
       assertEquals(1, selectLong(connection, "SELECT 1"));
+    }
+  }
+
+  @Test
+  void aCopysFailureQuotesNoneOfItsRows() throws Exception {
+    try (var writer = open(POSTGRESQL)) {
+      execute(
+          writer,
+          "DROP TABLE IF EXISTS file_run_quoted",
+          "CREATE TABLE file_run_quoted (id integer, name text)");
+    }
+    var file = file("quoted.sql", "COPY file_run_quoted FROM stdin;\n1\tok\ns3cret\tx\n\\.\n");
+    var sent = new ArrayList<Sent>();
+    try (var connection = open(POSTGRESQL)) {
+      var report = Journal.recording(sent::add, () -> run(connection, POSTGRESQL, file, STOP));
+      assertEquals(FileRun.Ending.STOPPED, report.ending());
+      var failed = report.failures().getFirst();
+      assertEquals(Outcome.ROW_WITHHELD, failed.message());
+      // The server would have quoted the row, as the statement log does not.
+      var logged = sent.stream().filter(s -> s.purpose() == Purpose.FILE).toList();
+      assertEquals(new Outcome.Failed(Outcome.ROW_WITHHELD), logged.getLast().outcome());
+      assertFalse(report.toString().contains("s3cret"), report.toString());
+      assertFalse(sent.toString().contains("s3cret"), sent.toString());
     }
   }
 

@@ -1,6 +1,7 @@
 package dev.hoori.db.core.sql;
 
 import dev.hoori.db.core.connection.Provider;
+import dev.hoori.db.core.dialect.ClientDialect;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -31,6 +32,21 @@ public final class TransactionControl {
     return any(sql, provider, provider.dialect().client()::commitsImplicitly);
   }
 
+  /**
+   * What the statement does to the tables the session locked, as the dialect's {@link
+   * ClientDialect#tableLocks} tells, by the first way the server may read it that does any.
+   */
+  public static ClientDialect.TableLocks tableLocks(String sql, Provider provider) {
+    var client = provider.dialect().client();
+    for (var reading : Tokens.readings(provider)) {
+      var locks = client.tableLocks(words(sql, provider, reading));
+      if (locks != ClientDialect.TableLocks.KEEPS) {
+        return locks;
+      }
+    }
+    return ClientDialect.TableLocks.KEEPS;
+  }
+
   // Whether the words of any reading of the code are such.
   private static boolean any(String sql, Provider provider, Predicate<List<String>> such) {
     for (var reading : Tokens.readings(provider)) {
@@ -41,16 +57,14 @@ public final class TransactionControl {
     return false;
   }
 
-  // The code's words as the reading reads them, in lower case, without a variable's @.
+  // The code's words as the reading reads them, in lower case, without a system variable's @@,
+  // as SET @@autocommit sets autocommit; a user variable's @ stays, as @autocommit is another.
   private static List<String> words(String sql, Provider provider, Tokens.Reading reading) {
     var words = new ArrayList<String>();
     for (var token : Tokens.of(sql, provider, reading)) {
       var text = token.text();
-      int k = 0;
-      while (k < text.length() && text.charAt(k) == '@') {
-        k++;
-      }
-      words.add(Tokens.keyword(text.substring(k)).toLowerCase(Locale.ROOT));
+      var word = text.startsWith("@@") ? text.substring(2) : text;
+      words.add(Tokens.keyword(word).toLowerCase(Locale.ROOT));
     }
     return words;
   }

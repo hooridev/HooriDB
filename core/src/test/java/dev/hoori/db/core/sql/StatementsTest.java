@@ -68,6 +68,19 @@ class StatementsTest {
         "CREATE TABLE t (a int)",
         "DO $$BEGIN END$$",
         "SELECT 4");
+    // A routine named begin, or one whose body names it, has no block; a comment may come between.
+    assertSplit(
+        POSTGRESQL,
+        "CREATE FUNCTION public.begin() RETURNS int LANGUAGE sql AS 'SELECT 1'; SELECT 2;"
+            + " CREATE FUNCTION begin() RETURNS int AS 'SELECT 1' LANGUAGE sql; SELECT 3;"
+            + " CREATE PROCEDURE p() BEGIN /* a */ ATOMIC SELECT t.end, s . begin FROM t; END;"
+            + " SELECT 4",
+        "CREATE FUNCTION public.begin() RETURNS int LANGUAGE sql AS 'SELECT 1'",
+        "SELECT 2",
+        "CREATE FUNCTION begin() RETURNS int AS 'SELECT 1' LANGUAGE sql",
+        "SELECT 3",
+        "CREATE PROCEDURE p() BEGIN /* a */ ATOMIC SELECT t.end, s . begin FROM t; END",
+        "SELECT 4");
     // MariaDB and MySQL split such a body, as their clients do without DELIMITER.
     assertSplit(
         MARIADB,

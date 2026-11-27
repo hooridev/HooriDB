@@ -13,21 +13,21 @@ import com.rethinkj.ui.FileDialog;
 import com.rethinkj.ui.kit.Button;
 import com.rethinkj.ui.kit.Callout;
 import com.rethinkj.ui.kit.Card;
+import com.rethinkj.ui.kit.ComboBox;
 import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.Dialog;
 import com.rethinkj.ui.kit.Form;
 import com.rethinkj.ui.kit.Format;
 import com.rethinkj.ui.kit.Label;
-import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Progress;
 import com.rethinkj.ui.kit.Prop;
 import com.rethinkj.ui.kit.Segmented;
-import com.rethinkj.ui.kit.Select;
 import com.rethinkj.ui.kit.StatusBar;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.ServerVersion;
+import dev.hoori.db.core.connection.Workspace;
 import dev.hoori.db.core.execution.FileRun;
 import dev.hoori.db.core.monitor.Credentials;
 import java.nio.file.Path;
@@ -36,17 +36,22 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Run SQL file: a file chosen in the system's dialog runs against a connection and database, on a
  * session of its own, as {@link FileRun} runs it; on an error it stops or goes on, optionally in
  * one transaction. While it runs, the dialog shows how far it is and cancels it, and can be hidden,
- * which the status line then shows; at its end, how it went and the failed statements with their
- * lines. Its statements go into the statement log, not the console's history. One file runs at a
- * time.
+ * which the status line then shows, and a run that ends hidden says so in a desktop notification;
+ * at its end, how it went and the failed statements with their lines. Its statements go into the
+ * statement log, not the console's history. One file runs at a time.
+ *
+ * <p>A run in one transaction is guarded as a console's transaction is: an act that would end it,
+ * as Exit or its connection's disconnecting, asks first, as cancelling it rolls back what it ran.
+ * What its end and its session's closing report as failed goes to the notices.
  */
-final class FileRunDialog {
+final class FileRunDialog implements Guard.Guarded {
 
   static final String TITLE = "Run SQL file";
 
@@ -79,17 +84,16 @@ final class FileRunDialog {
   boolean transaction;
   boolean hidden; // while it runs, or once it ended hidden
   String problem; // why the file could not be chosen or the run not begun, or null
-  final Menu.State connectionMenu = new Menu.State();
-  final Menu.State databaseMenu = new Menu.State();
+  final ComboBox.State connectionBox = new ComboBox.State();
+  final ComboBox.State databaseBox = new ComboBox.State();
   final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.ROWS);
 
   private FileRun run; // while it runs and after
+  private AtomicBoolean began; // whether the run began on its session, once it was asked to run
   private boolean cancelling;
   private String endedBy; // what ended the run, where the app did, or null
   private Lane lane; // the run's own session, or null
   private char[] password; // a copy, to mask it in what failed; wiped once that is masked
-  // Whether the server committed DDL by itself, as it was when the run began.
-  private boolean ddlCommits;
   FileRun.Progress progress; // the last told, or null before the first
   FileRun.Report report; // once it ended
   String failure; // once it ended without a report, why
@@ -125,17 +129,6 @@ final class FileRunDialog {
   }
 
   // Choosing
-
-  /** The connections a file can run on: of SQL, and connected. */
-  private static List<UUID> connections(State s) {
-    var ids = new ArrayList<UUID>();
-    for (var profile : s.profiles) {
-      if (!profile.provider().keepsDocuments() && s.catalog.connected(profile.id())) {
-        ids.add(profile.id());
-      }
-    }
-    return ids;
-  }
 
   /** The databases to choose from: those the tree read, and the one chosen. */
   private List<String> databases(State s) {
@@ -176,6 +169,11 @@ final class FileRunDialog {
     if (file == null || profile == null || busy()) {
       return;
     }
+    var locked = s.guard.locked(this);
+    if (locked != null) {
+      problem = locked + ": that comes first.";
+      return;
+    }
     var session = s.catalog.session(s, id, database);
     if (session == null) {
       problem = State.name(profile) + " is not connected.";
@@ -184,7 +182,6 @@ final class FileRunDialog {
     problem = null;
     lane = session.lane();
     password = session.password();
-    ddlCommits = !transactionalDdl(s, profile);
     var app = s.app;
     var told = new AtomicLong(System.nanoTime() - TOLD);
     var options = new FileRun.Options(onError == OnError.GO_ON && !transaction, transaction);
@@ -196,16 +193,22 @@ final class FileRunDialog {
       }
     });
     var running = run;
+    var beginning = new AtomicBoolean();
+    began = beginning;
     lane.ask(
         s.app,
         "run " + file.getFileName(),
         Lane.Priority.VIEW,
-        link -> link.runFile(running),
+        link -> {
+          beginning.set(true);
+          return link.runFile(running);
+        },
         ended -> ended(s, ended),
         error -> failed(s, error));
   }
 
-  // Ran: what failed, the connection's password masked in it, and the session closes.
+  // Ran: what failed, the connection's password masked in it, and the session closes. A
+  // transaction whose end failed is in doubt, which the notices say too, as Exit then stays.
   private void ended(State s, FileRun.Report ended) {
     var masked = new ArrayList<FileRun.Failed>(ended.failures().size());
     for (var f : ended.failures()) {
@@ -217,6 +220,15 @@ final class FileRunDialog {
     failed = List.copyOf(masked);
     report = ended;
     progress = ended.progress();
+    if (ended.transaction() == FileRun.Kept.IN_DOUBT) {
+      var why = failed.isEmpty() ? "" : " " + failed.getLast().message().replace('\n', ' ');
+      s.notice(
+          connectionName(s),
+          file.getFileName().toString(),
+          "The end of the file's transaction failed:" + why + " " + IN_DOUBT,
+          true,
+          null);
+    }
     finish(s);
   }
 
@@ -227,22 +239,38 @@ final class FileRunDialog {
     finish(s);
   }
 
-  // The run is over, and what it said masked: its session closes, and the dialog shows how it
-  // went, unless another dialog is open now, in which case the status line says so.
+  // The run is over, and what it said masked: its session closes. A run that ended hidden says so
+  // in a desktop notification, whose click shows the dialog, and in the status line.
   private void finish(State s) {
     closeSession(s);
     wipe();
     cancelling = false;
-    if (hidden && !s.dialogs.anyOpen()) {
-      hidden = false;
+    if (hidden) {
+      s.app.notify(
+          file.getFileName() + ": " + outcome(),
+          where(s),
+          () -> {
+            if (s.dialogs.fileRun == this && !s.dialogs.anyOpen()) {
+              hidden = false;
+            }
+          },
+          error -> {
+            // The status line says how it went all the same.
+          });
     }
   }
 
-  /** Cancel: the run stops, and rolls back its transaction. */
-  void cancel() {
+  /**
+   * Cancel run: the run stops, and rolls back its transaction; one whose session still connects
+   * is given up with the session, as the run never began.
+   */
+  void cancel(State s) {
     if (run != null && busy()) {
       cancelling = true;
       run.cancel();
+      if (!began.get()) {
+        closeSession(s);
+      }
     }
   }
 
@@ -253,7 +281,7 @@ final class FileRunDialog {
   void end(State s, String why) {
     if (busy()) {
       endedBy = why;
-      cancel();
+      cancel(s);
       closeSession(s);
     }
   }
@@ -270,24 +298,84 @@ final class FileRunDialog {
 
   /** HooriDB closes: the run, if any, is cancelled and its session closed. */
   void closeAll(State s) {
-    cancel();
+    cancel(s);
     closeSession(s);
   }
 
+  // Its session closes, which Exit waits for, and what that reports goes to the notices.
   private void closeSession(State s) {
     if (lane != null) {
-      s.closing();
-      var closing = lane.close(ended -> {});
-      s.app.background(
-          "close the file's session",
-          () -> {
-            closing.join();
-            return null;
-          },
-          done -> s.closed(),
-          e -> s.closed());
+      s.closeSession(
+          lane, connectionName(s), "the file's session", file.getFileName().toString(), password);
       lane = null;
     }
+  }
+
+  private String connectionName(State s) {
+    var profile = s.profile(id);
+    return profile == null ? "A deleted connection" : State.name(profile);
+  }
+
+  // Guarded: a run in one transaction, which an act that ends it asks about first
+
+  /** What the end of a transaction in doubt leaves, as the summary and the notice say. */
+  static final String IN_DOUBT = "What is still open is rolled back as the session closes, and a"
+      + " commit whose connection was lost may have taken effect.";
+
+  @Override
+  public UUID connectionId() {
+    return id;
+  }
+
+  /**
+   * A run in one transaction is at stake while it runs and is not cancelled, as cancelling it
+   * rolls back what it ran; there are no grid changes.
+   */
+  @Override
+  public boolean atStake(Guard.Scope scope) {
+    return scope != Guard.Scope.CHANGES && busy() && transaction && !cancelling;
+  }
+
+  /** Shows the dialog, raised in the main window, where its question is. */
+  @Override
+  public void show(State s) {
+    hidden = false;
+    var window = s.app == null ? null : s.app.windows().of(s.app);
+    if (window != null) {
+      window.raise();
+    }
+  }
+
+  /** What an act that would end the run asks first: cancel it, and go on, or keep it running. */
+  @Override
+  public El question(State s) {
+    if (!(s.guard.pending instanceof Guard.Pending.Question asked) || asked.tab() != this) {
+      return null;
+    }
+    Runnable keep = () -> s.guard.pending = null;
+    El keeping = button(SECONDARY, "Keep running", keep).key("answer-keep");
+    El cancelRun = button(
+            SECONDARY,
+            "Cancel the run",
+            () -> {
+              s.guard.pending = null;
+              cancel(s);
+              asked.then().run();
+            },
+            Button.options().tone(Button.Tone.DANGER))
+        .key("answer-cancel");
+    // Enter keeps it running, as a cancel cannot be taken back.
+    return Dialog.dialog(
+            "Cancel the run?",
+            col()
+                .w(ConnectionDialog.width())
+                .child(label(file.getFileName() + " runs in one transaction on " + where(s)
+                        + ". Cancel it, which rolls back what it ran, and " + asked.what() + "?")
+                    .wrapText()),
+            List.of(keeping, cancelRun),
+            keeping,
+            keep)
+        .key("file-run-question");
   }
 
   private void wipe() {
@@ -310,7 +398,8 @@ final class FileRunDialog {
   }
 
   El view(State s) {
-    if (hidden) {
+    // Its question shows alone, as a dialog of its own in its place.
+    if (hidden || s.guard.pending instanceof Guard.Pending.Question asked && asked.tab() == this) {
       return null;
     }
     return switch (phase()) {
@@ -346,9 +435,9 @@ final class FileRunDialog {
   private El choosing(State s) {
     Theme t = Theme.CURRENT.get();
     var profile = s.profile(id);
-    var ids = connections(s);
-    if (profile != null && !ids.contains(id)) {
-      ids.addFirst(id);
+    var ids = new ArrayList<>(TargetChooser.order(s, Workspace.Language.SQL, id));
+    if (!ids.contains(id)) {
+      ids.addFirst(id); // a deleted one, as it was chosen
     }
     boolean connected = s.catalog.connected(id);
     El chosen = row()
@@ -359,17 +448,19 @@ final class FileRunDialog {
             .grow(1)
             .wrapText())
         .child(button(SECONDARY, "Choose…", () -> choose(s)).key("choose"));
-    El connection = Select.select(
-            ids, id, x -> State.name(s.profile(x)), connectionMenu, x -> connection(s, x))
+    El connection = ComboBox.items(
+            ids, id, x -> TargetChooser.item(s, x), connectionBox, x -> connection(s, x))
         .key("connection")
+        .label("Connection")
         .wFull();
-    El databases = Select.select(
+    El databases = ComboBox.comboBox(
             databases(s),
             database,
             x -> x.isEmpty() ? "The connection's own" : x,
-            databaseMenu,
+            databaseBox,
             x -> database = x)
         .key("database")
+        .label("Database")
         .wFull();
     El errors = Segmented.segmented(
             List.of(OnError.values()),
@@ -450,7 +541,7 @@ final class FileRunDialog {
     El cancel = button(
             SECONDARY,
             "Cancel run",
-            cancelling ? null : this::cancel,
+            cancelling ? null : () -> cancel(s),
             Button.options()
                 .tone(Button.Tone.DANGER)
                 .state(cancelling ? Button.State.BUSY : Button.State.READY))
@@ -534,7 +625,8 @@ final class FileRunDialog {
     var p = report.progress();
     var text = new StringBuilder(
         switch (report.ending()) {
-          case RAN -> statements(p.statements()) + " ran in " + took(report.took()) + ".";
+          case RAN ->
+            statements(p.statements()) + " ran in " + Format.DURATION.text(report.took()) + ".";
           case STOPPED -> {
             // The failure it stopped at is the last listed, where none was left out.
             var line = failed.isEmpty() || failed.size() < p.failed()
@@ -560,26 +652,20 @@ final class FileRunDialog {
                 : "");
       case COMMITTED -> text.append(" The transaction was committed.");
       case ROLLED_BACK -> text.append(rolledBack());
-      case IN_DOUBT ->
-        text.append(" The transaction's end failed: what is still open is rolled back as the"
-            + " session closes, and a commit whose connection was lost may have taken effect.");
+      case IN_DOUBT -> text.append(" The transaction's end failed. ").append(IN_DOUBT);
     }
     return text.toString();
   }
 
-  // What a rollback of the run's transaction left of the file: what the server committed by
-  // itself stays.
+  // What a rollback of the run's transaction left of the file: what ran up to where the server
+  // committed by itself, as at DDL on MariaDB and MySQL, stays.
   private String rolledBack() {
     long line = report.committedAt();
     if (line > 0) {
       return " The transaction was rolled back, but what ran up to line " + Format.LONG.text(line)
-          + " stays, as the server committed it by itself there"
-          + (ddlCommits ? ", and so does DDL that ran after it." : ".");
+          + " stays, as the server committed it by itself there.";
     }
-    return ddlCommits
-        ? " The transaction was rolled back, but DDL that ran stays, as the server committed it by"
-            + " itself."
-        : " The transaction was rolled back: nothing of the file was kept.";
+    return " The transaction was rolled back: nothing of the file was kept.";
   }
 
   // Whether the connected server rolls back DDL with the transaction, as far as it is known.
@@ -603,12 +689,6 @@ final class FileRunDialog {
 
   static String statements(long n) {
     return Format.LONG.text(n) + (n == 1 ? " statement" : " statements");
-  }
-
-  private static String took(Duration took) {
-    return took.toMillis() < 1_000
-        ? took.toMillis() + " ms"
-        : Format.DURATION.text(took.withNanos(0));
   }
 
   // The first line of a failed statement, as the grid shows it.

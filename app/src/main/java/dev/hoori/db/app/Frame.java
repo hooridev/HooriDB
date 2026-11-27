@@ -293,12 +293,20 @@ final class Frame {
     return questioned != null ? questioned.tab().question(s) : null;
   }
 
-  /** The question a tab of the window asks about what may be open in it, or null. */
+  /**
+   * The question a tab of the window asks about what may be open in it, or null; a file's run
+   * asks in the main window.
+   */
   private static Guard.Pending.Question questioned(State s, TabGroups.Group<Tab> group) {
     return s.guard.pending instanceof Guard.Pending.Question question
-            && s.tabs.groupOf((Tab) question.tab()) == group
+            && group(s, question.tab()) == group
         ? question
         : null;
+  }
+
+  // The tabs of the window where what is guarded asks.
+  private static TabGroups.Group<Tab> group(State s, Guard.Guarded guarded) {
+    return guarded instanceof Tab tab ? s.tabs.groupOf(tab) : s.tabs.main().active();
   }
 
   /**
@@ -650,25 +658,29 @@ final class Frame {
     }
     int consoles = 0;
     int tables = 0;
+    boolean run = false;
     for (var tab : tabs) {
-      if (tab instanceof ConsoleTab) {
-        consoles++;
-      } else {
-        tables++;
+      switch (tab) {
+        case ConsoleTab _ -> consoles++;
+        case TableTab _ -> tables++;
+        case FileRunDialog _ -> run = true;
       }
     }
     String text;
-    if (tables == 0) {
+    if (consoles + tables == 0) {
+      text = "A file that runs in one transaction holds uncommitted work";
+    } else if (tables == 0 && !run) {
       text =
           consoles + (consoles == 1 ? " console may" : " consoles may") + " hold uncommitted work";
-    } else if (consoles == 0) {
+    } else if (consoles == 0 && !run) {
       text = tables + (tables == 1 ? " table has" : " tables have") + " uncommitted changes";
     } else {
       int n = consoles + tables;
-      text = n + " tabs may hold uncommitted work";
+      text = n + (n == 1 ? " tab" : " tabs") + (run ? " and a file's run" : "")
+          + " may hold uncommitted work";
     }
     var first = tabs.getFirst();
-    boolean asking = modal || asks(s, s.tabs.groupOf((Tab) first));
+    boolean asking = modal || asks(s, group(s, first));
     return StatusBar.item(
             Badge.Kind.WARNING, Symbol.LOCK_OPEN, text, asking ? null : () -> first.show(s))
         .key("uncommitted");
