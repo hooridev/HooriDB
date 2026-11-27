@@ -41,6 +41,12 @@ public final class StatementReader implements Closeable {
   // tell what the part is: a delimiter of at most 15 chars, a word DELIMITER, "--" and its next.
   private static final int CHUNK = 1 << 16;
   private static final int MARGIN = 16;
+
+  /**
+   * The most chars that one step's text may take, 16 Mi, as much as MariaDB's {@code
+   * max_allowed_packet} takes by default: a statement that runs on past them fails the read.
+   */
+  public static final int LONGEST = 1 << 24;
   private static final char BYTE_ORDER_MARK = 0xFEFF;
 
   /** What the file holds next. */
@@ -76,6 +82,7 @@ public final class StatementReader implements Closeable {
   private final Provider provider;
   private final long size;
   private final int windowSize;
+  private final int longest;
   private final StringBuilder buffer = new StringBuilder();
   // What was taken of the buffer, and the line and offset there.
   private int at;
@@ -104,10 +111,16 @@ public final class StatementReader implements Closeable {
 
   // Reading the given chars at a time, as a test cuts the file into windows.
   StatementReader(Reader in, Provider provider, long size, int windowSize) {
+    this(in, provider, size, windowSize, LONGEST);
+  }
+
+  // With a step's text at most the chars given long, as a test makes it short.
+  StatementReader(Reader in, Provider provider, long size, int windowSize, int longest) {
     this.in = in;
     this.provider = provider;
     this.size = size;
     this.windowSize = windowSize;
+    this.longest = longest;
     this.wanted = windowSize;
   }
 
@@ -303,14 +316,50 @@ public final class StatementReader implements Closeable {
       advance(n); // nothing but white space and comments is left
       return false;
     }
-    wanted = Math.max(windowSize, 2 * (n - at)); // a part goes on beyond the window
+    skipComments();
+    int pending = buffer.length() - at;
+    if (pending > longest) {
+      throw tooLong(firstLine());
+    }
+    // A part goes on beyond the window: twice as much, up to one char past the longest.
+    wanted = (int) Math.clamp(2L * pending, windowSize, longest + 1L);
     return true;
+  }
+
+  // The failure of a step that runs on past the longest, from the line given.
+  private IOException tooLong(long from) {
+    return new IOException(String.format(
+        Locale.ROOT,
+        "The statement on line %d runs on past %,d characters, more than HooriDB reads of one",
+        from,
+        longest));
+  }
+
+  // Takes the white space and the comments from the reader on whose end the buffer holds, as what
+  // follows cannot change them, so that a long run of them, as a file's prologue, is not held: up
+  // to the first code, or a comment that the server runs, or one that goes on past the buffer: a
+  // comment ends within it where more follows, at its line's end or its */.
+  private void skipComments() {
+    var rest = buffer.substring(at);
+    int to = 0;
+    for (var piece : Statements.pieces(rest, provider)) {
+      if (piece.kind() != Statements.Piece.Kind.COMMENT
+          || piece.end() == rest.length()
+          || ReadWrite.executable(rest, piece, provider)) {
+        break;
+      }
+      to = piece.end();
+    }
+    if (to > 0) {
+      advance(at + to);
+    }
   }
 
   // Queues the parts of the window that what follows in the file cannot change, each with the line
   // and offset where it begins and where the reader is after it, up to the first copy, as what
   // follows that is rows, which the scan took for statements.
-  private void queue(List<Statements.Part> parts, String window, int context) {
+  private void queue(List<Statements.Part> parts, String window, int context)
+      throws IOException {
     int position = at;
     long lineAt = line;
     long offsetAt = offset;
@@ -322,6 +371,12 @@ public final class StatementReader implements Closeable {
       int start = part.start() + context;
       lineAt += lines(position, start);
       offsetAt += bytes(position, start);
+      if (part.end() - part.start() > longest) {
+        if (ready.isEmpty()) {
+          throw tooLong(lineAt);
+        }
+        return; // once the parts before it are taken
+      }
       var step = step(part, window.substring(part.start(), part.end()), lineAt, offsetAt);
       lineAt += lines(start, after);
       offsetAt += bytes(start, after);
@@ -346,7 +401,6 @@ public final class StatementReader implements Closeable {
     if (ended) {
       return true;
     }
-
     return after + MARGIN <= buffer.length() && terminated(part);
   }
 
@@ -445,7 +499,17 @@ public final class StatementReader implements Closeable {
     }
   }
 
+  // The line where what the buffer holds from the reader on begins, past white space.
+  private long firstLine() {
+    int k = at;
+    while (k < buffer.length() && Character.isWhitespace(buffer.charAt(k))) {
+      k++;
+    }
+    return line + lines(at, k);
+  }
+
   private int lines(int from, int to) {
+
     int count = 0;
     for (int k = from; k < to; k++) {
       if (buffer.charAt(k) == '\n') {
