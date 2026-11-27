@@ -80,9 +80,9 @@ public final class Merge {
       }
       source.take();
       target.take();
-      var different = paired(mine, theirs);
-      if (different != null) {
-        return different;
+      var difference = paired(mine, theirs);
+      if (difference != null) {
+        return difference;
       }
     }
   }
