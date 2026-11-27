@@ -50,7 +50,8 @@ import java.util.stream.IntStream;
  *
  * <p>The call blocks. An interrupt of the calling thread cancels the call that runs, rolls back
  * what was not committed, and ends the run as {@link Stage#CANCELLED}, with the thread still
- * interrupted.
+ * interrupted. Where that rollback fails, or closing the target's session as the run ends, the
+ * report's {@link Report#problem} says so.
  */
 public final class Copier {
 
@@ -71,6 +72,7 @@ public final class Copier {
   private final List<Table> deleting = new ArrayList<>(); // and emptied, not committed yet
   private List<Entry> tables;
   private Stage stage = Stage.PREPARING;
+  private String problem; // what failed as the run ended, as a rollback after a cancel
   private boolean same; // whether the source and the target are on the same server and database
   private long batchBytes = BUDGET; // at most of a batch
 
@@ -111,17 +113,7 @@ public final class Copier {
     }
     tell();
     try {
-      ready();
-      prepare();
-      if (stopsAt(State.FAILED)) {
-        return stop();
-      }
-      target.begin();
-      stage = Stage.COPYING;
-      if (!copyAll()) {
-        return stop();
-      }
-      stage = Stage.DONE;
+      copy();
     } catch (Cancel | InterruptedException _) {
       // Where the cancel came as an InterruptedException, which cleared it, the thread stays
       // interrupted all the same.
@@ -139,9 +131,34 @@ public final class Copier {
       tables.replaceAll(
           table -> table.state() == State.WAITING ? table.with(State.FAILED, why(e)) : table);
     } finally {
-      quietly(target::end);
+      var unended = attempt(target::end);
+      if (unended != null) {
+        problem("Closing the session of the target failed: " + why(unended));
+      }
     }
     return tell();
+  }
+
+  // Readies the sessions, reads what the tables need, and copies them, or stops at a failure.
+  private void copy() throws Cancel, QueryException, CatalogException, InterruptedException {
+    ready();
+    prepare();
+    if (stopsAt(State.FAILED)) {
+      stop();
+      return;
+    }
+    target.begin();
+    stage = Stage.COPYING;
+    if (!copyAll()) {
+      stop();
+      return;
+    }
+    stage = Stage.DONE;
+  }
+
+  // What went wrong as the run ended, after what went wrong before.
+  private void problem(String what) {
+    problem = problem == null ? what : problem + " " + what;
   }
 
   // Puts both sessions in the state a copy needs, and learns whether they are on the same server
@@ -466,7 +483,15 @@ public final class Copier {
     }
     var left = copying.table.rows(copying.written, copying.kept);
     if (cancelled(e)) {
-      tables.set(index, left.with(State.CANCELLED));
+      if (unended == null) {
+        tables.set(index, left.with(State.CANCELLED));
+      } else {
+        // What it wrote since its last commit may still be in the session: the cancel says so.
+        var failed = "Rolling it back failed: " + why(unended);
+        tables.set(index, left.with(State.CANCELLED, failed));
+        problem("Rolling back " + copying.table.copy().from().name() + " after the cancel failed: "
+            + why(unended) + " What it wrote since its last commit may not have been undone.");
+      }
       throw new Cancel();
     }
     var problem = copying.table.state() == State.EMPTYING
@@ -549,12 +574,11 @@ public final class Copier {
   }
 
   // The run stops at a failure: the tables not copied yet are skipped.
-  private Report stop() {
+  private void stop() {
     stage = Stage.STOPPED;
     tables.replaceAll(table -> table.state() == State.WAITING
         ? table.with(State.SKIPPED, "Not copied, as the run stopped at a failure.")
         : table);
-    return tell();
   }
 
   private Report refused(String problem) {
@@ -564,7 +588,7 @@ public final class Copier {
   }
 
   private Report tell() {
-    var report = new Report(stage, null, tables);
+    var report = new Report(stage, problem, tables);
     told.accept(report);
     return report;
   }

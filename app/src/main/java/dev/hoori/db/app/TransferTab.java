@@ -1099,33 +1099,39 @@ final class TransferTab implements Tab, Guard.Guarded {
         var failures = report.in(Report.State.FAILED);
         yield failures.isEmpty()
             ? Callout.callout(
-                    Callout.Kind.SUCCESS,
+                    report.problem() == null ? Callout.Kind.SUCCESS : Callout.Kind.WARNING,
                     "Copied",
-                    tables(copied.size()) + ", " + ConsoleTab.rows(rows) + ".")
+                    ended(tables(copied.size()) + ", " + ConsoleTab.rows(rows) + "."))
                 .key("transfer-done")
             : Callout.callout(
                     Callout.Kind.WARNING,
                     "Copied " + copied.size() + " of " + tables(report.tables().size()),
-                    failures(failures))
+                    ended(failures(failures)))
                 .key("transfer-done");
       }
       case STOPPED ->
         Callout.callout(
                 Callout.Kind.DANGER,
                 "The copy stopped at a failure",
-                failures(report.in(Report.State.FAILED))
+                ended(failures(report.in(Report.State.FAILED))
                     + (copied.isEmpty()
                         ? ""
                         : "\n" + tables(copied.size()) + " copied before, " + ConsoleTab.rows(rows)
-                            + "."))
+                            + ".")))
             .key("transfer-stopped");
       case CANCELLED ->
-        Callout.callout(
-                Callout.Kind.INFO,
-                "Cancelled",
-                tables(copied.size()) + " copied, " + kept() + " in all; what was not committed"
-                    + " was rolled back.")
-            .key("transfer-cancelled");
+        report.problem() == null
+            ? Callout.callout(
+                    Callout.Kind.INFO,
+                    "Cancelled",
+                    tables(copied.size()) + " copied, " + kept() + " in all; what was not"
+                        + " committed was rolled back.")
+                .key("transfer-cancelled")
+            : Callout.callout(
+                    Callout.Kind.WARNING,
+                    "Cancelled, but not cleanly",
+                    tables(copied.size()) + " copied, " + kept() + " in all.\n" + report.problem())
+                .key("transfer-cancelled");
       case REFUSED ->
         Callout.callout(Callout.Kind.DANGER, "The copy was refused", report.problem())
             .key("transfer-refused");
@@ -1148,6 +1154,11 @@ final class TransferTab implements Tab, Guard.Guarded {
         ? ConsoleTab.rows(rows) + " of " + ConsoleTab.rows(total.getAsLong())
         : ConsoleTab.rows(rows);
     return Progress.labeled(what, fraction, detail).wFull().key("transfer-progress");
+  }
+
+  // The text, then what failed as the run ended, where something did.
+  private String ended(String text) {
+    return report.problem() == null ? text : text + "\n" + report.problem();
   }
 
   // The rows kept of all tables.

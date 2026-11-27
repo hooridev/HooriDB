@@ -324,6 +324,50 @@ class CopierTest {
   }
 
   @Test
+  void aCancelWhoseRollbackFailsSaysSoOnTheTableAndTheReport() throws Exception {
+    rows("x", 25);
+    rows("y", 2);
+    holding = new CountDownLatch(1);
+    failing.put("rollback", QueryException.of(QueryException.Failure.OTHER, "no answer"));
+    failing.put("end", QueryException.of(QueryException.Failure.OTHER, "socket closed"));
+    var told = new CopyOnWriteArrayList<Report>();
+    var result = new AtomicReference<Report>();
+    var runner = Thread.ofVirtual()
+        .start(() -> result.set(Copier.run(
+            transfer(OnError.STOP, Commit.TABLE, 10, "x", "y"), source(), target(), told::add)));
+    held.await();
+    runner.interrupt();
+    runner.join();
+
+    var report = result.get();
+    // Still a cancel, but not one that looks clean: the table and the report keep both failures.
+    assertEquals(Stage.CANCELLED, report.stage());
+    assertEquals(List.of(State.CANCELLED, State.CANCELLED), states(report));
+    var x = report.tables().getFirst();
+    assertEquals("Rolling it back failed: no answer", x.problem());
+    assertEquals(0, x.kept());
+    assertEquals(
+        "Rolling back x after the cancel failed: no answer What it wrote since its last commit"
+            + " may not have been undone. Closing the session of the target failed: socket"
+            + " closed",
+        report.problem());
+    assertEquals("end", calls.getLast());
+    assertEquals(report, told.getLast());
+  }
+
+  @Test
+  void aSessionThatFailsToCloseIsOnTheReportOfACopyThatRanToItsEnd() {
+    rows("x", 3);
+    failing.put("end", QueryException.of(QueryException.Failure.OTHER, "socket closed"));
+
+    var report = run(transfer(OnError.STOP, Commit.TABLE, 10, "x"));
+
+    assertEquals(Stage.DONE, report.stage());
+    assertEquals(List.of(State.COPIED), states(report));
+    assertEquals("Closing the session of the target failed: socket closed", report.problem());
+  }
+
+  @Test
   void aRollbackThatFailsStopsTheRunAlsoWhereItGoesOnAtAnError() {
     rows("x", 25);
     rows("y", 2);
@@ -560,9 +604,10 @@ class CopierTest {
       }
 
       @Override
-      public void end() {
+      public void end() throws QueryException {
         calls.add("end");
         pending.clear();
+        fail("end");
       }
     };
   }

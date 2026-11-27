@@ -9,7 +9,8 @@ import java.util.OptionalLong;
  * How far a run is, or how it ended: its stage, and each table's state, in the order they are
  * written once the run ordered them.
  *
- * @param problem why the run was refused before it began, or null
+ * @param problem why the run was refused before it began, or what failed as it ended: the rollback
+ *     of a table after a cancel, or closing the target's session; null where nothing did
  */
 public record Report(Stage stage, String problem, List<Entry> tables) {
 
