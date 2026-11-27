@@ -3,6 +3,7 @@ package dev.hoori.db.app;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rethinkj.ui.Work;
 import dev.hoori.db.core.TestServer;
@@ -20,6 +21,7 @@ import dev.hoori.db.core.sync.Tally;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -95,14 +97,16 @@ class SyncLanesServerTest {
   }
 
   // A script runs as applying would, on any of the servers: a moment of the key written as each
-  // reads it back, which MariaDB reads with no offset in a literal.
+  // reads it back, which MariaDB reads with no offset in a literal, and the names in its comment
+  // on one line, though a name holds a line break. Given up before it takes the file's place, it
+  // leaves the file as it was; else it takes it.
   @ParameterizedTest
   @MethodSource("dev.hoori.db.core.TestServer#sql")
   void aSavedScriptMakesTheTargetEqualWhenItRuns(Provider provider, @TempDir Path dir)
       throws Exception {
     var server = TestServer.of(provider);
     var suffix = UUID.randomUUID().toString().substring(0, 8);
-    var source = table(provider, "sync_script_source_" + suffix);
+    var source = table(provider, "sync_script_source_" + suffix + "\nx");
     var target = table(provider, "sync_script_target_" + suffix);
     var moment = provider == Provider.POSTGRESQL ? "timestamptz" : "timestamp(6)";
     var setup = ServersServerTest.open(server);
@@ -128,8 +132,22 @@ class SyncLanesServerTest {
             new Tally(1, 1, 1, 0, 2, 2),
             Sync.compare(sides, pairing, provider, QUIET).tally());
         var file = dir.resolve("sync.sql");
-        Sync.script(sides, pairing, Choice.ALL, provider, file, QUIET);
-        for (var line : Files.readAllLines(file)) {
+        Files.writeString(file, "kept\n");
+        var givenUp = new Sync.Commit();
+        givenUp.cancel();
+        assertThrows(
+            InterruptedException.class,
+            () -> Sync.script(sides, pairing, Choice.ALL, provider, file, givenUp, QUIET));
+        assertEquals("kept\n", Files.readString(file));
+        try (var files = Files.list(dir)) {
+          assertEquals(List.of(file), files.toList());
+        }
+
+        Sync.script(sides, pairing, Choice.ALL, provider, file, new Sync.Commit(), QUIET);
+        var lines = Files.readAllLines(file);
+        assertTrue(lines.getFirst().startsWith("-- Makes the rows of "), lines.getFirst());
+        assertEquals("START TRANSACTION;", lines.get(1));
+        for (var line : lines) {
           if (!line.startsWith("--")
               && !line.equals("START TRANSACTION;")
               && !line.equals("COMMIT;")) {

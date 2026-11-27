@@ -238,6 +238,7 @@ class SyncTabTest {
     var app = compared(SHOP);
     c.run(app, COMPARE);
     var file = dir.resolve("orders.sql");
+    Files.writeString(file, "-- an older script\n"); // which it takes the place of
     c.run(
         app,
         "dialog \"" + file.toString().replace('\\', '/') + "\"\n"

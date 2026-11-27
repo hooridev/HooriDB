@@ -111,7 +111,7 @@ final class SyncTab implements Tab {
   final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.CELLS);
   private List<Line> lines = List.of(); // the grid's lines of what was compared
   private Work work; // the run under way, or null
-  private Sync.Commit commit; // whether the writing under way commits, or null
+  private Sync.Commit commit; // whether the writing or the script under way commits, or null
   private boolean compareAfter; // whether the writing under way compares again once committed
   private int runs; // counts the runs, so that what one that was given up sends goes nowhere
   private int says;
@@ -417,18 +417,30 @@ final class SyncTab implements Tab {
     var pairing = compared.pairing();
     var chosen = choice;
     var provider = provider(s);
+    var publishing = new Sync.Commit();
     start(
         s,
         Running.SCRIPTING,
-        progress -> Sync.script(sides, pairing, chosen, provider, file, progress),
-        got -> say(s, "Saved the script to " + file.getFileName() + "."),
+        progress -> Sync.script(sides, pairing, chosen, provider, file, publishing, progress),
+        got -> {
+          commit = null;
+          say(s, "Saved the script to " + file.getFileName() + ".");
+        },
         null);
+    commit = publishing;
   }
 
-  /** Gives up what runs, which rolls back what it wrote; not a commit that has begun. */
+  /**
+   * Gives up what runs, which rolls back what it wrote; not a commit that has begun, nor a script
+   * that takes its file's place.
+   */
   void cancel(State s) {
     if (commit != null && !commit.cancel()) {
-      say(s, "The changes are being committed: what came of it shows once it ends.");
+      say(
+          s,
+          running == Running.SCRIPTING
+              ? "The script is taking the file's place: what came of it shows once it has."
+              : "The changes are being committed: what came of it shows once it ends.");
       return;
     }
     if (work != null) {

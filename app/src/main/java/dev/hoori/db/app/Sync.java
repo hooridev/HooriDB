@@ -100,9 +100,9 @@ final class Sync {
   record Applied(Tally tally, long written, Changes.Outcome outcome) {}
 
   /**
-   * Whether a writing commits or is given up, decided once, by whichever asks first: so that a
-   * cancel either ends the writing before its commit, or comes too late and leaves the writing to
-   * say what came of the commit.
+   * Whether a run ends as it is to, a writing by its commit and a script by taking the file's
+   * place, or is given up, decided once, by whichever asks first: so that a cancel either ends the
+   * run before that, or comes too late and leaves the run to say what came of it.
    */
   static final class Commit {
 
@@ -113,18 +113,18 @@ final class Sync {
 
     private final AtomicReference<Decided> decided = new AtomicReference<>();
 
-    /** The writing is to commit: whether it may, as it was not given up. */
+    /** The run is to commit: whether it may, as it was not given up. */
     boolean begin() {
       return decided.compareAndSet(null, Decided.COMMITTING);
     }
 
-    /** Gives the writing up, where its commit has not begun: whether it is given up. */
+    /** Gives the run up, where its commit has not begun: whether it is given up. */
     boolean cancel() {
       decided.compareAndSet(null, Decided.GIVEN_UP);
       return decided.get() == Decided.GIVEN_UP;
     }
 
-    /** Whether the commit has begun, so that only its end tells what came of the writing. */
+    /** Whether the commit has begun, so that only its end tells what came of the run. */
     boolean begun() {
       return decided.get() == Decided.COMMITTING;
     }
@@ -239,7 +239,8 @@ final class Sync {
    * Writes the statements that make the target's rows equal to the source's, as far as the choice
    * goes, to the file, in one transaction, in the order that applying writes them, each as a
    * script runs it ({@link Changes#script}); the file is written beside it first and takes its
-   * place once whole, so that a failure or a cancel leaves it as it was.
+   * place at once, once whole and as {@code commit} lets it, so that a failure or a cancel before
+   * leaves it as it was.
    */
   static Tally script(
       Sides sides,
@@ -247,6 +248,7 @@ final class Sync {
       Choice choice,
       Provider provider,
       Path file,
+      Commit commit,
       Work.Progress<Progress> progress)
       throws Exception {
     var folder = file.toAbsolutePath().getParent();
@@ -254,9 +256,9 @@ final class Sync {
     try {
       Tally tally;
       try (Writer out = Files.newBufferedWriter(temporary, StandardCharsets.UTF_8)) {
-        out.write("-- Makes the rows of "
+        out.write(comment("Makes the rows of "
             + Rows.qualified(provider, sides.target().table()) + " equal to those of "
-            + Rows.qualified(provider, sides.source().table()) + ".\n");
+            + Rows.qualified(provider, sides.source().table()) + "."));
         out.write("START TRANSACTION;\n");
         tally = Batches.make(
                 () -> Reading.open(sides, pairing),
@@ -273,11 +275,22 @@ final class Sync {
             .tally();
         out.write("COMMIT;\n");
       }
-      Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING);
+      if (!commit.begin()) {
+        throw new InterruptedException("Given up before the script took the file's place");
+      }
+      // At once or not at all: a move that is not atomic may delete the file and then fail.
+      Files.move(
+          temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
       return tally;
     } finally {
       Files.deleteIfExists(temporary);
     }
+  }
+
+  // A comment of SQL on one line: a name may hold a line break, after which the rest would run as
+  // SQL, so each character that ends a line or controls is written as a space.
+  private static String comment(String text) {
+    return "-- " + text.replaceAll("[\\p{Cc}\\p{Zl}\\p{Zp}]", " ") + "\n";
   }
 
   /**
