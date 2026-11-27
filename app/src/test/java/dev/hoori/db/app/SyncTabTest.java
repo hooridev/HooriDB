@@ -224,13 +224,24 @@ class SyncTabTest {
     assertTrue(c.servers.linked.stream().noneMatch(l -> l.contains(" writer ")));
   }
 
+  // Until they share one: Compare pairs them anew, as a key may have been added meanwhile.
   @Test
   void tablesWithoutAKeyBothShareCannotBeCompared() throws Exception {
     var app = compared(SHOP);
     c.run(app, choose("store · shop.public.unkeyed") + SETTLE + "snap unpaired\n");
     var tree = c.tree("unpaired");
     assertTrue(tree.contains("These tables cannot be compared"), tree);
-    assertTrue(line(tree, "label=\"Compare\"").endsWith("disabled"), tree);
+    assertFalse(line(tree, "label=\"Compare\"").endsWith("disabled"), tree);
+
+    var keyedOutline = OUTLINE.replace("unkeyed\n      id:", "unkeyed\n      *id:");
+    assertFalse(keyedOutline.equals(OUTLINE));
+    c.servers.serve(HOST, Provider.POSTGRESQL, "16.4", keyedOutline);
+    c.servers.values(HOST + "/shop.public.unkeyed", List.of(Arrays.asList(1L, "new")));
+    c.run(app, COMPARE + "frame\nframe\nsnap keyed\n");
+    var keyed = c.tree("keyed");
+    assertFalse(keyed.contains("These tables cannot be compared"), keyed);
+    assertTrue(keyed.contains("3 rows only in the source"), keyed);
+    assertTrue(keyed.contains("1 row equal"), keyed);
   }
 
   @Test

@@ -739,11 +739,11 @@ final class SyncTab implements Tab {
       actions.add(
           button(SECONDARY, "Cancel", committing ? null : () -> cancel(s)).key("cancel"));
     }
-    boolean can = target != null && running == null && !(found instanceof Pairing.Unpaired);
+    // Also where they did not pair, as a key may have been added since: compare pairs them anew.
     actions.add(button(
             PRIMARY,
             "Compare",
-            can ? () -> compare(s) : null,
+            target != null && running == null ? () -> compare(s) : null,
             Button.options()
                 .icon(Symbol.ARROW_SYNC)
                 .state(running == Running.COMPARING ? Button.State.BUSY : Button.State.READY))
