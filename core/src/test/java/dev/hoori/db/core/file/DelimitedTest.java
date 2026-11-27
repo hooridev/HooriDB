@@ -171,6 +171,25 @@ class DelimitedTest {
   }
 
   @Test
+  void quotesAValueThatStartsWithAMarkSoThatItIsReadBackWhole() throws IOException {
+    var name = List.of(new Field("name", "text", Kind.TEXT));
+    var plain = Format.Delimited.CSV.withHeader(false);
+    var rows = List.of(row("\uFEFFfirst"), row("\uFEFF"));
+    assertEquals(
+        "\"\uFEFFfirst\"\r\n\"\uFEFF\"\r\n",
+        new String(bytes(plain, name, rows), StandardCharsets.UTF_8));
+    for (var format : List.of(plain, Format.Delimited.CSV.withEncoding(Encoding.UTF_8_BOM))) {
+      var values = read(format, bytes(format, name, rows)).stream()
+          .map(DelimitedReader.Record::values)
+          .toList();
+      assertEquals(
+          List.of(List.of("\uFEFFfirst"), List.of("\uFEFF")),
+          format.header() ? values.subList(1, values.size()) : values,
+          format.toString());
+    }
+  }
+
+  @Test
   void failsARowWhoseCharactersTheEncodingCannotWrite() {
     var latin = Format.Delimited.CSV.withEncoding(Encoding.ISO_8859_1);
     var e = assertThrows(

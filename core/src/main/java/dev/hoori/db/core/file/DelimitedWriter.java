@@ -11,7 +11,8 @@ import java.util.List;
 
 /**
  * Delimited text, as {@link Format.Delimited} says, with a byte order mark first where the
- * encoding has one. A character that the encoding cannot write fails the row.
+ * encoding has one, and a value that starts with one quoted. A character that the encoding cannot
+ * write fails the row.
  */
 final class DelimitedWriter implements RowWriter {
 
@@ -77,9 +78,12 @@ final class DelimitedWriter implements RowWriter {
     }
   }
 
+  // A text that starts with a byte order mark is quoted too, so that no reader takes it for the
+  // file's mark where it comes first.
   private boolean quoted(String text) {
     return format.quoting() == Format.Quoting.ALL
         || text.equals(format.nullText())
+        || (!text.isEmpty() && text.charAt(0) == Encoding.MARK)
         || text.indexOf(format.delimiter()) >= 0
         || text.indexOf(format.quote()) >= 0
         || text.indexOf('\n') >= 0
