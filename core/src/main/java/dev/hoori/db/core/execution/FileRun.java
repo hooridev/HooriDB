@@ -442,19 +442,21 @@ public final class FileRun {
   }
 
   // Lists the failure of a step. A command of the client shows by its name alone, as its line,
-  // which no server read, may give another's password.
+  // which no server read, may give another's password; a copy's without the server's words,
+  // which may quote a row.
   private void listStep(StatementReader.Step step, Failure failure) {
     switch (step) {
-      case StatementReader.Sql sql -> listStatement(sql.sql(), sql.line(), failure);
-      case StatementReader.Copy copy -> listStatement(copy.sql(), copy.line(), failure);
+      case StatementReader.Sql sql -> listStatement(sql.sql(), sql.line(), failure, false);
+      case StatementReader.Copy copy -> listStatement(copy.sql(), copy.line(), failure, true);
       case StatementReader.Command command ->
         list(command.line(), "\\" + command.name(), message(failure));
     }
   }
 
   // Lists the failure of a statement that begins on the line, at the line the server names where
-  // it does, its passwords masked.
-  private void listStatement(String sql, long line, Failure failure) {
+  // it does, its passwords masked; the server's words withheld where they may quote rows that the
+  // statement copied in from the file, which may hold credentials.
+  private void listStatement(String sql, long line, Failure failure, boolean rows) {
     long at = line
         + failure
             .place(sql, provider)
@@ -462,7 +464,15 @@ public final class FileRun {
                 sql.substring(0, place.start()).chars().filter(c -> c == '\n').count())
             .orElse(0L);
     var masked = Secrets.masked(sql, provider);
-    var message = masked.equals(sql) ? message(failure) : Outcome.WITHHELD;
+    String message;
+    if (!masked.equals(sql)) {
+      message = Outcome.WITHHELD;
+    } else if (rows && !failure.state().isEmpty()) {
+      message = Outcome.ROW_WITHHELD; // the server's, not the file's own failure
+    } else {
+      message = message(failure);
+    }
+
     list(at, start(masked), message);
   }
 
@@ -528,7 +538,7 @@ public final class FileRun {
       try {
         // The reader stops a copy that is cancelled, as the run cancels it, so that the driver
         // ends the copy on the server; past Query's grace the connection is given up.
-        Journal.sql(
+        Journal.rows(
             provider,
             Purpose.FILE,
             sql,

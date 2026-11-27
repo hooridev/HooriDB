@@ -15,12 +15,17 @@ import dev.hoori.db.core.connect.Connector;
 import dev.hoori.db.core.connection.Capability;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.connection.ServerVersion;
+import dev.hoori.db.core.log.Journal;
+import dev.hoori.db.core.log.Outcome;
+import dev.hoori.db.core.log.Purpose;
+import dev.hoori.db.core.log.Sent;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -343,6 +348,29 @@ class FileRunServerTest {
       assertEquals(FileRun.Ending.CANCELLED, report[0].ending());
       assertEquals(1, report[0].progress().statements());
       assertEquals(1, selectLong(connection, "SELECT 1"));
+    }
+  }
+
+  @Test
+  void aCopysFailureQuotesNoneOfItsRows() throws Exception {
+    try (var writer = open(POSTGRESQL)) {
+      execute(
+          writer,
+          "DROP TABLE IF EXISTS file_run_quoted",
+          "CREATE TABLE file_run_quoted (id integer, name text)");
+    }
+    var file = file("quoted.sql", "COPY file_run_quoted FROM stdin;\n1\tok\ns3cret\tx\n\\.\n");
+    var sent = new ArrayList<Sent>();
+    try (var connection = open(POSTGRESQL)) {
+      var report = Journal.recording(sent::add, () -> run(connection, POSTGRESQL, file, STOP));
+      assertEquals(FileRun.Ending.STOPPED, report.ending());
+      var failed = report.failures().getFirst();
+      assertEquals(Outcome.ROW_WITHHELD, failed.message());
+      // The server would have quoted the row, as the statement log does not.
+      var logged = sent.stream().filter(s -> s.purpose() == Purpose.FILE).toList();
+      assertEquals(new Outcome.Failed(Outcome.ROW_WITHHELD), logged.getLast().outcome());
+      assertFalse(report.toString().contains("s3cret"), report.toString());
+      assertFalse(sent.toString().contains("s3cret"), sent.toString());
     }
   }
 

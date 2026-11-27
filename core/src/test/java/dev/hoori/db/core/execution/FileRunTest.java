@@ -281,7 +281,32 @@ class FileRunTest {
   }
 
   @Test
+  void theServersWordsOnACopyAreWithheldAsTheyMayQuoteARow() {
+    var copy = "COPY users FROM stdin";
+    var failure = new Failure(
+        Failure.Kind.OTHER,
+        "invalid input syntax for type integer: \"s3cret\"",
+        "22P02",
+        0,
+        0,
+        "",
+        0,
+        0,
+        "",
+        "",
+        "",
+        "COPY users, line 1, column id: \"s3cret\"");
+    var report = run(
+        POSTGRESQL,
+        copy + ";\ns3cret\tx\n\\.\n",
+        new FileRun.Options(false, false),
+        new Session(Map.of(copy, failure)));
+    assertEquals(List.of(new FileRun.Failed(1, copy, Outcome.ROW_WITHHELD)), report.failures());
+  }
+
+  @Test
   void aPasswordIsMaskedAndTheMessageWithheld() {
+
     var sql = "CREATE ROLE r PASSWORD 'hunter2' LOGIN";
     var failure = Failure.of(Failure.Kind.INVALID, "near 'hunter2'");
     var report = run(
