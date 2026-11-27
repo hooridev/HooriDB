@@ -1522,10 +1522,14 @@ final class State {
     var profile = profile(tab.id);
     var title = (profile == null ? "" : name(profile))
         + (tab.database.isEmpty() ? "" : ": " + tab.database);
-    var same = consoles(null).stream()
+    var same = new ArrayList<>(consoles(null).stream()
         .filter(x ->
             x.queryId == null && Objects.equals(x.id, tab.id) && x.database.equals(tab.database))
-        .toList();
+        .toList());
+    // A tab whose window opens is in no group until it has opened, and then in the last.
+    if (!same.contains(tab)) {
+      same.add(tab);
+    }
     return same.size() < 2 ? title : title + " (" + (same.indexOf(tab) + 1) + ")";
   }
 
