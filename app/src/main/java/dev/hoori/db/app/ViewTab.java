@@ -788,21 +788,20 @@ final class ViewTab implements Tab, Guard.Guarded {
     return col().grow(1).minSize(0, 0).padding(t.space().s()).child(embedded).key("editor");
   }
 
-  // The console's completions, for the statement the caret is in, on the view's database.
+  // The console's completions, for the statement the caret is in, on the view's database: the
+  // text is split only while the list asks for them.
   private El completing(State s, App<State> app, Provider provider, El code) {
     if (!completion.isOpen()) {
       suggestions.forget();
     }
-    int caret = Math.min(editor.caret(), text.length());
-    var around = Statements.of(text, provider).around(caret);
-    var statement = text.substring(around.start(), around.end());
     var database = database();
-    El completing = Completion.complete(
-        app,
-        code,
-        editor.caret(),
-        completion,
-        word -> suggestions.at(s, provider, database, statement, caret - around.start(), word));
+    El completing =
+        Completion.completeWithContext(app, code, editor.caret(), completion, context -> {
+          var around = Statements.of(context.text(), provider).around(context.caret());
+          var statement = context.text().substring(around.start(), around.end());
+          int caret = context.caret() - around.start();
+          return suggestions.at(s, provider, database, statement, caret, context.word());
+        });
     var keys = completing.onKey();
     return completing.onKey(k -> {
       if (k.name().equals("Space") && k.modifiers() == Key.CONTROL) {

@@ -288,6 +288,18 @@ class ViewTabTest {
   }
 
   @Test
+  void theQueryCompletesTheTablesOfTheViewsDatabase() throws Exception {
+    var app = opened(SHOP);
+    c.run(
+        app,
+        menu("public", "New view…") + replace("SELECT id FROM public.ord")
+            + (ConsoleEditorTest.COMPLETE + SETTLE).repeat(2) + ConsoleEditorTest.COMPLETE
+            + "snap completed\n");
+    var options = ConsoleEditorTest.options(c.tree("completed"));
+    assertTrue(options.contains("orders"), options.toString());
+  }
+
+  @Test
   void controlSSavesOnlyWhatTheSaveButtonWould() throws Exception {
     var app = opened(SHOP);
     // A materialized view not edited: Save would drop and create it anew.
