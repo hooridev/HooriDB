@@ -178,6 +178,31 @@ class RoutineTabTest {
         app.state().statements.entries().toString());
   }
 
+  @Test
+  void aRoutineSomeoneElseCreatesDuringSaveIsNotTheOneTheTabShows() throws Exception {
+    var app = shop();
+    var changed = ADD_SOURCE.replace("a + b", "a + b + 1");
+    var theirs = new Routine(PUBLIC, "theirs", "", Kind.FUNCTION, "integer", List.of());
+    // Only the body changes, and between the routines read before and after it, theirs appears.
+    c.servers.defines(PG, changed, () -> {
+      c.servers.forget(PG, ADD);
+      c.servers.routine(PG, ADD, changed);
+      c.servers.routine(PG, theirs, "CREATE FUNCTION public.theirs() …");
+    });
+    c.run(
+        app,
+        "press role=treeitem label=\"add(integer, integer)\"\nkey Enter\n" + SETTLE
+            + "press role=button label=\"Edit\"\n" + OPENS + edit(changed)
+            + "press role=button label=\"Save…\"\n" + OPENS + "press role=button label=\"Save\"\n"
+            + OPENS + SETTLE + "snap saved\n");
+    var tab = app.state().routines(null).getFirst();
+    assertEquals(ADD, tab.routine);
+    assertEquals("add(integer, integer)", app.state().title(tab));
+    var saved = c.tree("saved");
+    assertTrue(saved.contains("a + b + 1"), saved);
+    assertFalse(saved.contains("public.theirs"), saved);
+  }
+
   // MySQL's add(int, int), defined by another user, created under a sql_mode of its own.
   private static final Routine MY_ADD = new Routine(
       LEGACY_DB,

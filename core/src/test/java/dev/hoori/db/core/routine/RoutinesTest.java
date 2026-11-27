@@ -259,6 +259,56 @@ class RoutinesTest {
   }
 
   @Test
+  void theRoutineSavedIsFoundByTheTextsNameNotByWhatElseAppeared() {
+    var pg = Provider.POSTGRESQL;
+    var add = new Routine(
+        PUBLIC,
+        "add",
+        "a integer",
+        Kind.FUNCTION,
+        "integer",
+        List.of(new Parameter("a", "integer", Mode.IN)));
+    var other = new Routine(PUBLIC, "other", "", Kind.FUNCTION, "integer", List.of());
+    var body = "CREATE OR REPLACE FUNCTION public.add(a integer) RETURNS integer"
+        + " LANGUAGE sql AS $$ SELECT a + 1 $$";
+    // Only the body changed, while someone else created another routine: it is the one replaced.
+    assertEquals(
+        Optional.of(add), Routines.saved(pg, add, body, List.of(add), List.of(add, other)));
+    // The text added an overload of its name: that one, also where another appeared too.
+    var overload = new Routine(
+        PUBLIC,
+        "add",
+        "a bigint",
+        Kind.FUNCTION,
+        "integer",
+        List.of(new Parameter("a", "bigint", Mode.IN)));
+    assertEquals(
+        Optional.of(overload),
+        Routines.saved(
+            pg,
+            add,
+            body.replace("a integer", "a bigint"),
+            List.of(add),
+            List.of(add, overload, other)));
+    // A new routine, created by its name and kind; a procedure of that name is not it.
+    var made = new Routine(PUBLIC, "made", "", Kind.FUNCTION, "integer", List.of());
+    var procedure = new Routine(PUBLIC, "made", "", Kind.PROCEDURE, "", List.of());
+    assertEquals(
+        Optional.of(made),
+        Routines.saved(
+            pg,
+            null,
+            "CREATE FUNCTION made() RETURNS integer LANGUAGE sql AS $$ SELECT 1 $$",
+            List.of(),
+            List.of(other, procedure, made)));
+    // Where two of its name appeared, it cannot tell which.
+    assertEquals(
+        Optional.empty(),
+        Routines.saved(
+            pg, add, body.replace("a integer", "a bigint"), List.of(), List.of(add, overload)));
+  }
+
+  @Test
   void dropNamesAnOverloadByItsArguments() {
     var add = new Routine(
         PUBLIC,

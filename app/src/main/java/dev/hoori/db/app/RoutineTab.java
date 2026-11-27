@@ -444,6 +444,7 @@ final class RoutineTab implements Tab, Guard.Guarded {
     var replaced = routine;
     var in = container;
     var sent = text;
+    var provider = provider(s);
     var cancels = new Routines.Applying();
     applying = cancels;
     s.closing(); // Exit waits for the change, then for its session's closing
@@ -453,7 +454,7 @@ final class RoutineTab implements Tab, Guard.Guarded {
         Lane.Priority.VIEW,
         link -> drop
             ? new Changed(link.define(in, change, cancels), null, null)
-            : saved(link, change, in, cancels),
+            : saved(link, provider, replaced, sent, change, in, cancels),
         changed -> {
           ended(s, lane);
           if (closed || s.guard.quitting()) {
@@ -517,10 +518,17 @@ final class RoutineTab implements Tab, Guard.Guarded {
     }
   }
 
-  // The change, then the routines of the container, by which the routine saved is found: the one
-  // that is new, as one whose name or arguments the text changed; else the one replaced.
+  // The change, then the routines of the container, by which the routine saved is found, as
+  // Routines.saved finds it by the text's name and kind: not one of another name that someone
+  // else created meanwhile.
   private static Changed saved(
-      Servers.Link link, Routines.Change change, Container container, Routines.Applying applying)
+      Servers.Link link,
+      Provider provider,
+      Routine replaced,
+      String sent,
+      Routines.Change change,
+      Container container,
+      Routines.Applying applying)
       throws QueryException, CatalogException {
     var before = link.routines(container);
     var outcome = link.define(container, change, applying);
@@ -529,8 +537,7 @@ final class RoutineTab implements Tab, Guard.Guarded {
     }
     try {
       var after = link.routines(container);
-      var added = after.stream().filter(r -> !before.contains(r)).toList();
-      var found = added.size() == 1 ? added.getFirst() : null;
+      var found = Routines.saved(provider, replaced, sent, before, after).orElse(null);
       return new Changed(outcome, found, found == null ? null : link.source(found));
     } catch (CatalogException e) {
       return new Changed(outcome, null, null); // saved all the same

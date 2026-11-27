@@ -297,6 +297,40 @@ public final class Routines {
         Optional.of(new Renamed(nameAt.start(), nameAt.end() - nameAt.start(), written.length())));
   }
 
+  /**
+   * The routine that Save made of the text, among those its container holds after it: of the kind
+   * and name that the text's head creates, the one that was not there before, as where the text
+   * changed its arguments; else the routine replaced, where it is there as it was, as where only
+   * its body changed. Empty where none fits or more than one does, as where someone else created
+   * one of that name meanwhile; a routine of another name that appeared meanwhile is not it.
+   *
+   * @param replaced the routine the text was read from, or null for a new one
+   * @param before the routines of the container before the change
+   * @param after the routines of the container after it
+   */
+  public static Optional<Routine> saved(
+      Provider provider, Routine replaced, String text, List<Routine> before, List<Routine> after) {
+    var head = RoutineHead.of(statement(text, provider), provider);
+    if (head.isEmpty()) {
+      return Optional.empty();
+    }
+    var h = head.get();
+    var routines = provider.dialect().routines();
+    var named = after.stream()
+        .filter(r -> (r.kind() == Routine.Kind.PROCEDURE) == h.procedure()
+            && routines.sameName(h.name(), r.name())
+            && (h.qualifier().isEmpty() || h.qualifier().equals(r.container().name())))
+        .toList();
+    var added = named.stream().filter(r -> !before.contains(r)).toList();
+    if (added.size() == 1) {
+      return Optional.of(added.getFirst());
+    }
+    if (added.isEmpty() && replaced != null && named.contains(replaced)) {
+      return Optional.of(replaced);
+    }
+    return Optional.empty();
+  }
+
   // A name of its own for the trial, which no routine of the user's is likely to have.
   private static String trialName() {
     var bytes = new byte[6];
