@@ -5,6 +5,7 @@ import com.rethinkj.ui.El;
 import com.rethinkj.ui.Key;
 import com.rethinkj.ui.editor.CodeEditor;
 import com.rethinkj.ui.kit.Completion;
+import com.rethinkj.ui.kit.Format;
 import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Markdown;
 import com.rethinkj.ui.kit.MarkdownDocument;
@@ -51,7 +52,7 @@ final class ConsoleEditor {
   /** The last recorded outcome of one statement. */
   private record Ran(boolean failed, Duration took, String detail) {
     String tooltip() {
-      var ms = took == null ? null : took.toMillis() + " ms";
+      var ms = took == null ? null : Format.DURATION.text(took);
       if (failed) {
         var said = ms == null ? "Failed" : "Failed after " + ms;
         return detail.isEmpty() ? said : said + " · " + detail;
@@ -208,12 +209,11 @@ final class ConsoleEditor {
         completion,
         word -> suggestions.at(s, language, provider, word));
     // Control+Space asks anew, with what was read since the list was made.
-    var keys = completing.onKey();
-    return completing.onKey(k -> {
+    return completing.onKeyFirst(k -> {
       if (k.name().equals("Space") && k.modifiers() == Key.CONTROL) {
         suggestions.forget();
       }
-      return keys != null && keys.test(k);
+      return false;
     });
   }
 

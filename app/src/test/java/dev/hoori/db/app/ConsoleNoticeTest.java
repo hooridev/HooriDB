@@ -859,7 +859,7 @@ class ConsoleNoticeTest extends ConsoleTransactions {
       assertTrue(k.tab(app).outputs.getFirst().cut);
       c.run(app, "press #sql\nkey A control\nkey Delete\n" + type(COUNT) + RUN + "snap next\n");
       assertTrue(
-          ConsoleTest.status(c.tree("next")).contains("\"Ran in 4 ms · 1 row\""), c.tree("next"));
+          ConsoleTest.status(c.tree("next")).contains("\"Ran in 4.0 ms · 1 row\""), c.tree("next"));
       servers.calls.clear();
     }
     // A give-up that lost the connection closes the session so the next Run opens a new one.
@@ -873,7 +873,7 @@ class ConsoleNoticeTest extends ConsoleTransactions {
         app, "press #sql\nkey A control\nkey Delete\n" + type(COUNT) + RUN + "snap reconnected\n");
     assertTrue(k.tab(app).connected());
     assertTrue(
-        ConsoleTest.status(c.tree("reconnected")).contains("\"Ran in 4 ms · 1 row\""),
+        ConsoleTest.status(c.tree("reconnected")).contains("\"Ran in 4.0 ms · 1 row\""),
         c.tree("reconnected"));
   }
 }

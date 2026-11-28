@@ -161,7 +161,7 @@ class ConsoleTest {
     assertTrue(tabs(one).startsWith("shop-prod: shop,Result 1,Messages"), tabs(one));
     assertTrue(line(one, "#column-0").contains("label=\"count\""), one);
     assertTrue(cell(one, 0, 0).contains("\"1\""), one);
-    assertTrue(status(one).contains("\"Ran in 4 ms · 1 row\""), one);
+    assertTrue(status(one).contains("\"Ran in 4.0 ms · 1 row\""), one);
     // Its own connection and the planner's, opened behind the tree's, which the status bar counts
     // alone.
     assertEquals(
@@ -284,7 +284,7 @@ class ConsoleTest {
     assertTrue(tabs(two).endsWith("Result 1,Result 2,Messages"), tabs(two));
     assertFalse(line(two, "role=tab label=\"Result 1\"").contains("selected"), two);
     assertTrue(two.contains("label=\"3 rows changed\""), two);
-    assertTrue(status(two).contains("\"Ran in 4 ms · 3 rows changed\""), two);
+    assertTrue(status(two).contains("\"Ran in 4.0 ms · 3 rows changed\""), two);
     // Unpinned, the next run replaces it.
     c.run(
         app,
@@ -424,7 +424,7 @@ class ConsoleTest {
     assertTrue(line(ready, "#run-status").contains("\"Ready\""), ready);
     c.run(app, type(COUNT) + RUN + "snap ran\n");
     String ran = c.tree("ran");
-    assertTrue(line(ran, "#run-status").contains("\"Ran in 4 ms · 1 row\""), ran);
+    assertTrue(line(ran, "#run-status").contains("\"Ran in 4.0 ms · 1 row\""), ran);
     c.run(app, menu(SHOP.name(), "Disconnect") + SETTLE + "snap gone\n");
     String gone = c.tree("gone");
     assertTrue(line(gone, "#run-status").contains("\"Not connected\""), gone);
@@ -613,7 +613,7 @@ class ConsoleTest {
         "window \"shop-prod: shop\"\npress role=button label=\"Try again\"\nframe\n" + SETTLE
             + "snap ran\n");
     window = c.tree("shop-prod-shop-ran");
-    assertTrue(status(window).contains("\"Ran in 4 ms · 1 row\""), window);
+    assertTrue(status(window).contains("\"Ran in 4.0 ms · 1 row\""), window);
     assertFalse(window.contains("#unconnected"), window);
   }
 
@@ -636,7 +636,7 @@ class ConsoleTest {
             + "press role=button label=\"Connect\"\nframe\nadvance 1\nframe\n" + SETTLE
             + "snap ran\n");
     window = c.tree("shop-prod-shop-ran");
-    assertTrue(status(window).contains("\"Ran in 4 ms · 1 row\""), window);
+    assertTrue(status(window).contains("\"Ran in 4.0 ms · 1 row\""), window);
   }
 
   @Test
@@ -720,7 +720,7 @@ class ConsoleTest {
     assertTrue(tabs(ended).endsWith("Result 1,Result 2,Messages"), tabs(ended));
     assertTrue(near(ended, "#result-status").contains("\"250 rows ·"), ended);
     // Not a plain read, it was read to its end: two portions' time.
-    assertTrue(status(ended).contains("\"Ran in 8 ms · 250 rows · 5 rows changed\""), ended);
+    assertTrue(status(ended).contains("\"Ran in 8.0 ms · 250 rows · 5 rows changed\""), ended);
   }
 
   @Test
@@ -737,7 +737,7 @@ class ConsoleTest {
     assertTrue(failed.contains("label=\"Try again\""), failed);
     servers.heal("open " + PG + "/shop");
     c.run(app, "press #try-again\nframe\n" + SETTLE + "snap ran\n");
-    assertTrue(status(c.tree("ran")).contains("\"Ran in 4 ms · 1 row\""), c.tree("ran"));
+    assertTrue(status(c.tree("ran")).contains("\"Ran in 4.0 ms · 1 row\""), c.tree("ran"));
   }
 
   @Test
@@ -841,7 +841,7 @@ class ConsoleTest {
     assertFalse(
         servers.calls.contains("next " + PG + " " + ORDERS + " 400"), servers.calls.toString());
     c.run(app, "press #sql\nkey A control\nkey Delete\n" + type(COUNT) + RUN + "snap next\n");
-    assertTrue(status(c.tree("next")).contains("\"Ran in 4 ms · 1 row\""), c.tree("next"));
+    assertTrue(status(c.tree("next")).contains("\"Ran in 4.0 ms · 1 row\""), c.tree("next"));
     // The tree's, the console's and the estimates' connection: the session is the same.
     assertEquals(
         3, servers.calls.stream().filter(k -> k.equals("open " + PG + "/shop")).count());

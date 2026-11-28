@@ -926,10 +926,11 @@ class ConsoleEditorTest {
     console.c.run(app, RUN_ALL + "snap ran\n");
     String ran = console.c.tree("ran");
     assertTrue(
-        gutterLine(ran, 0).contains("role=button label=\"Ran in 4 ms · 1 row\""),
+        gutterLine(ran, 0).contains("role=button label=\"Ran in 4.0 ms · 1 row\""),
         gutterLine(ran, 0));
     assertTrue(
-        gutterLine(ran, 1).contains("role=button label=\"Failed after 4 ms\""), gutterLine(ran, 1));
+        gutterLine(ran, 1).contains("role=button label=\"Failed after 4.0 ms\""),
+        gutterLine(ran, 1));
     assertTrue(
         gutterLine(ran, 4).contains("role=button label=\"Run statement\""), gutterLine(ran, 4));
 
@@ -938,26 +939,26 @@ class ConsoleEditorTest {
         app, "press role=button label=\"Run statement\"\nframe\n" + SETTLE + "snap pay\n");
     String pay = console.c.tree("pay");
     assertTrue(
-        gutterLine(pay, 4).contains("role=button label=\"Ran in 4 ms · 3 rows changed\""),
+        gutterLine(pay, 4).contains("role=button label=\"Ran in 4.0 ms · 3 rows changed\""),
         gutterLine(pay, 4));
 
     // Inserting a line at the top moves every marker down by one line.
     console.c.run(app, "press #sql\nkey Home control\nkey Enter\nframe\nsnap moved\n");
     String moved = console.c.tree("moved");
     assertTrue(
-        gutterLine(moved, 1).contains("role=button label=\"Ran in 4 ms · 1 row\""),
+        gutterLine(moved, 1).contains("role=button label=\"Ran in 4.0 ms · 1 row\""),
         gutterLine(moved, 1));
     assertTrue(
-        gutterLine(moved, 2).contains("role=button label=\"Failed after 4 ms\""),
+        gutterLine(moved, 2).contains("role=button label=\"Failed after 4.0 ms\""),
         gutterLine(moved, 2));
     assertTrue(
-        gutterLine(moved, 5).contains("role=button label=\"Ran in 4 ms · 3 rows changed\""),
+        gutterLine(moved, 5).contains("role=button label=\"Ran in 4.0 ms · 3 rows changed\""),
         gutterLine(moved, 5));
 
     // Clicking the moved succeeded marker runs statement 1 again at its current offsets.
     long runsBefore =
         servers.calls.stream().filter(("run " + PG + " " + COUNT)::equals).count();
-    console.c.run(app, "press role=button label=\"Ran in 4 ms · 1 row\"\nframe\n" + SETTLE);
+    console.c.run(app, "press role=button label=\"Ran in 4.0 ms · 1 row\"\nframe\n" + SETTLE);
     long runsAfter =
         servers.calls.stream().filter(("run " + PG + " " + COUNT)::equals).count();
     assertEquals(runsBefore + 1, runsAfter, servers.calls.toString());
@@ -972,7 +973,7 @@ class ConsoleEditorTest {
         gutterLine(editedStmt, 1).contains("role=button label=\"Run statement\""),
         gutterLine(editedStmt, 1));
     assertTrue(
-        gutterLine(editedStmt, 2).contains("role=button label=\"Failed after 4 ms\""),
+        gutterLine(editedStmt, 2).contains("role=button label=\"Failed after 4.0 ms\""),
         gutterLine(editedStmt, 2));
   }
 

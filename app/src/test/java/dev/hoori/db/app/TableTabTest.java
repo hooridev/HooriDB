@@ -56,7 +56,8 @@ class TableTabTest {
 
   private static final Pattern LABEL = Pattern.compile("label=\"([^\"]*)\"");
   private static final Pattern BOX = Pattern.compile(" (-?[\\d.]+),-?[\\d.]+ ([\\d.]+)x");
-  private static final Pattern READ = Pattern.compile("\"Read 200 rows in \\d+ ms\"");
+  private static final Pattern READ =
+      Pattern.compile("\"Read 200 rows in \\d+(\\.\\d)? (ns|µs|ms|s)\"");
 
   static final String OUTLINE = """
       shop

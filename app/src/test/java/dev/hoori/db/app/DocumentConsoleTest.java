@@ -144,12 +144,23 @@ class DocumentConsoleTest {
             + "type \"$\"\nframe\nadvance 1\nframe\nsnap dollar\n");
     assertEquals("$addFields", options(c.tree("dollar")).getFirst(), c.tree("dollar"));
     c.run(app, "key Escape\nframe\nadvance 1\nframe\n");
-    // The kit's word has no dollar: the operator goes in after the one typed.
+    // The dollar belongs to the word: the operator takes its place whole.
     c.run(
         app,
         "press #sql\nkey A control\nkey Delete\n" + type("db.orders.find({ total: { $gt") + COMPLETE
             + "key Enter\nframe\n");
     assertEquals("db.orders.find({ total: { $gt", app.state().consoles(null).getFirst().text);
+  }
+
+  @Test
+  void aDoublePressSelectsAnOperatorWithItsDollar() throws Exception {
+    var app = console();
+    var onTheM = "press #sql at left+92,top+12\n"; // the line's third character, past the gutter
+    c.run(
+        app,
+        "press #sql\nkey A control\nkey Delete\n" + type("$match") + onTheM + onTheM.trim()
+            + " clicks 2\nframe\nsnap word\n");
+    assertTrue(line(c.tree("word"), "#sql").contains("caret 6 (1:7) anchor 0"), c.tree("word"));
   }
 
   /** Nothing in a string, a comment or a regular expression, as in one of SQL. */
@@ -375,10 +386,10 @@ class DocumentConsoleTest {
     String ran = c.tree("ran");
     assertTrue(
         ConsoleEditorTest.gutterLine(ran, 0)
-            .contains("role=button label=\"Ran in 4 ms · 1 document\""),
+            .contains("role=button label=\"Ran in 4.0 ms · 1 document\""),
         ran);
     assertTrue(
-        ConsoleEditorTest.gutterLine(ran, 1).contains("role=button label=\"Failed after 4 ms\""),
+        ConsoleEditorTest.gutterLine(ran, 1).contains("role=button label=\"Failed after 4.0 ms\""),
         ran);
     assertTrue(line(ran, "#sql").contains("squiggle " + badAt + "-" + (badAt + 1)), ran);
     assertTrue(line(ran, "#end-1").contains("A comma or } is missing"), ran);
@@ -390,10 +401,11 @@ class DocumentConsoleTest {
     assertTrue(line(moved, "#end-2").contains("A comma or } is missing"), moved);
     assertTrue(
         ConsoleEditorTest.gutterLine(moved, 1)
-            .contains("role=button label=\"Ran in 4 ms · 1 document\""),
+            .contains("role=button label=\"Ran in 4.0 ms · 1 document\""),
         moved);
     assertTrue(
-        ConsoleEditorTest.gutterLine(moved, 2).contains("role=button label=\"Failed after 4 ms\""),
+        ConsoleEditorTest.gutterLine(moved, 2)
+            .contains("role=button label=\"Failed after 4.0 ms\""),
         moved);
 
     // SQL-only quick documentation and go-to-table do not activate in a MongoDB console.
