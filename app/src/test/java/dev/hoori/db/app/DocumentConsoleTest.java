@@ -137,6 +137,10 @@ class DocumentConsoleTest {
     var operators = offered(app, "db.orders.find({ total: { $g");
     assertTrue(operators.containsAll(List.of("$gt", "$gte")), operators.toString());
     assertTrue(operators.stream().allMatch(o -> o.startsWith("$")), operators.toString());
+    // An operator is found by any part of its name, its own first.
+    var set = offered(app, "db.orders.updateOne({}, { $set");
+    assertEquals("$set", set.getFirst(), set.toString());
+    assertTrue(set.containsAll(List.of("$addToSet", "$unset")), set.toString());
     // A dollar typed opens them at once.
     c.run(
         app,

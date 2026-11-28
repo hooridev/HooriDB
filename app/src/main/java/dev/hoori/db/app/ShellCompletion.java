@@ -101,6 +101,12 @@ record ShellCompletion() implements Suggestions.Strategy {
       "collation",
       "comment");
 
+  /** An operator's dollar is not matched, so that {@code $set} also finds {@code $addToSet}. */
+  @Override
+  public String matched(String word) {
+    return word.startsWith("$") ? word.substring(1) : word;
+  }
+
   @Override
   public List<Suggestions.Candidate> candidates(
       Suggestions.Known known, String statement, int caret, String word) {
@@ -115,7 +121,7 @@ record ShellCompletion() implements Suggestions.Strategy {
     var last = n > 0 && code.getLast().end() == before.length() ? code.getLast() : null;
     if (word.startsWith("$")) {
       return OPERATORS.stream()
-          .map(o -> new Suggestions.Candidate(o, o, o, Symbol.CODE, "operator", false))
+          .map(o -> new Suggestions.Candidate(o.substring(1), o, o, Symbol.CODE, "operator", false))
           .toList();
     }
     if (last != null && last.kind() != Lexer.Kind.PUNCTUATION) {
