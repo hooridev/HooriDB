@@ -626,6 +626,7 @@ class ConsoleEditorTest {
     assertEquals(List.of("orders", "audit.orders"), options(orders).subList(0, 2));
     var list = orders.substring(orders.indexOf("#completions"));
     assertTrue(list.contains("text \"public\""), list);
+    assertFalse(list.contains("text \"audit\""), "audit.orders says its schema already: " + list);
   }
 
   @Test

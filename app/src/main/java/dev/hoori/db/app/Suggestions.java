@@ -251,17 +251,17 @@ final class Suggestions {
     ranked.forEach(c -> named.merge(repeats(c), 1, Integer::sum));
     return ranked.stream()
         .map(c -> new Completion.Entry(
-            c.shown(),
-            c.symbol(),
-            c.kind(),
-            c.text(),
-            c.target() == null || named.get(repeats(c)) < 2
-                ? null
-                : c.label() != null ? c.label() : whose(c.target()),
-            -1,
-            -1,
-            List.of()))
+            c.shown(), c.symbol(), c.kind(), c.text(), detail(c, named), -1, -1, List.of()))
         .toList();
+  }
+
+  // Where a repeated name comes from, unless its entry already says so, as audit.orders does.
+  private static String detail(Candidate c, Map<String, Integer> named) {
+    if (c.target() == null || named.get(repeats(c)) < 2) {
+      return null;
+    }
+    var whose = c.label() != null ? c.label() : whose(c.target());
+    return c.shown().startsWith(whose + ".") ? null : whose;
   }
 
   // The key that tells a name repeated: a column's or a table's name as it is shown, or none.
