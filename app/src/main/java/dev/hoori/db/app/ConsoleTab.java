@@ -14,6 +14,7 @@ import com.rethinkj.ui.editor.CodeEditor;
 import com.rethinkj.ui.kit.Card;
 import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.Divider;
+import com.rethinkj.ui.kit.Format;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Split;
 import com.rethinkj.ui.kit.Theme;
@@ -2813,7 +2814,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
       }
       return false;
     };
-    code.onKey(code.onKey() == null ? keys : keys.or(code.onKey()));
+    code.onKeyFirst(keys);
     if (targets.isOpen()) {
       code.overlay(Menu.menu(targets, targetItems)
           .key("targets")
@@ -3017,7 +3018,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
 
   /** How the last run went, and its time on the server. */
   private String how() {
-    var ms = took.toMillis() + " ms";
+    var ms = Format.DURATION.text(took);
     if (cancelled) {
       return CANCELLED_TEXT;
     }

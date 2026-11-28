@@ -150,12 +150,9 @@ final class HistoryDialog {
     }
     El content = col()
         .gap(t.space().m())
-        .child(TextField.withIcon(
-            TextField.textField(search, "Search", v -> search = v)
-                .key("history-search")
-                .label("Search")
-                .w(34 * unit),
-            Symbol.SEARCH))
+        .child(TextField.searchField(search, "Search", v -> search = v)
+            .key("history-search")
+            .w(34 * unit))
         .child(Card.flush(list).w(34 * unit).h(10 * unit));
     Runnable close = () -> console.history = null;
     El insert = button(PRIMARY, "Insert", chosen() == null ? null : () -> insert(console, app))

@@ -463,7 +463,7 @@ final class ResultsArea {
     if (editable != null && changes != null) {
       Predicate<Key> guard = k ->
           ResultEdits.rejectUnloadedKey(app, o, k) || copiesOneWhole(app, o, k, zone, nullText);
-      grid.onKey(grid.onKey() == null ? guard : guard.or(grid.onKey()));
+      grid.onKeyFirst(guard);
     }
     return grid;
   }

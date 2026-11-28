@@ -129,9 +129,7 @@ final class ValuePanel {
       body = CodeEditor.embedded(CodeEditor.codeEditor(
                   app, text, editor, cell.kind() == Kind.JSON ? Json.of() : null, null)
               .key("value")
-              .label("Value of " + cell.column())
-              // Before the editor's own keys: a field takes Enter also where it only reads.
-              .onKeyFirst(this::key))
+              .label("Value of " + cell.column()))
           .grow(1);
     }
     El said = note == null

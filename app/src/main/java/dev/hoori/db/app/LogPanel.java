@@ -248,12 +248,9 @@ final class LogPanel {
                 i -> filter = filter.withEnded(i == 0 ? null : ENDINGS.get(i - 1)))
             .label("Outcome")
             .w(5 * unit))
-        .child(TextField.withIcon(
-            TextField.textField(filter.search(), "Search", v -> filter = filter.withSearch(v))
-                .key("statement-log-search")
-                .label("Search")
-                .w(10 * unit),
-            Symbol.SEARCH));
+        .child(TextField.searchField(filter.search(), "Search", v -> filter = filter.withSearch(v))
+            .key("statement-log-search")
+            .w(10 * unit));
   }
 
   // What the panel has to say above the entries: the question before Clear, that logging is off,

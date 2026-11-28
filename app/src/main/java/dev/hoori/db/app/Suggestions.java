@@ -47,6 +47,11 @@ final class Suggestions {
      * @param caret the caret's offset in the statement
      */
     List<Candidate> candidates(Known known, String statement, int caret, String word);
+
+    /** The part of the word that candidates' names are matched against. */
+    default String matched(String word) {
+      return word;
+    }
   }
 
   private final ConsoleTab tab; // the console it suggests in, or null
@@ -149,7 +154,7 @@ final class Suggestions {
             strategy.candidates(known, statement, caret, word),
             Candidate::name,
             Candidate::priority,
-            word)
+            strategy.matched(word))
         .stream()
         .map(c -> new Completion.Entry(c.shown(), c.symbol(), c.kind(), c.text()))
         .toList();

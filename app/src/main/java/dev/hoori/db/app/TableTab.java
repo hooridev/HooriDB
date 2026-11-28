@@ -18,6 +18,7 @@ import com.rethinkj.ui.kit.Completion;
 import com.rethinkj.ui.kit.ConditionBuilder;
 import com.rethinkj.ui.kit.DataGrid;
 import com.rethinkj.ui.kit.Divider;
+import com.rethinkj.ui.kit.Format;
 import com.rethinkj.ui.kit.Label;
 import com.rethinkj.ui.kit.Menu;
 import com.rethinkj.ui.kit.Progress;
@@ -46,6 +47,7 @@ import dev.hoori.db.core.document.DocumentFilters;
 import dev.hoori.db.core.document.Shell;
 import dev.hoori.db.core.document.Values;
 import dev.hoori.db.core.query.QueryException;
+import java.time.Duration;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -1664,7 +1666,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
    */
   private El completing(State s, App<State> app, Provider provider, Clause clause, El field) {
     field.onKey(k -> {
-      if (k.modifiers() == 0 && (k.name().equals("Enter") || k.name().equals("NumpadEnter"))) {
+      if (k.modifiers() == 0 && k.name().equals("Enter")) {
         apply(s);
         return true;
       }
@@ -1685,12 +1687,11 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
             prefix + clause.text,
             prefix.length() + Math.min(clause.caret, clause.text.length()),
             word));
-    var keys = completing.onKey();
-    return completing.onKey(k -> {
+    return completing.onKeyFirst(k -> {
       if (k.name().equals("Space") && k.modifiers() == Key.CONTROL) {
         clause.suggestions.forget();
       }
-      return keys != null && keys.test(k);
+      return false;
     });
   }
 
@@ -2150,8 +2151,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     if (took < 0) {
       return "";
     }
-    long ms = Math.round(took / 1e6);
-    return "Read " + ConsoleTab.rows(got, documents) + " in " + ms + " ms";
+    return "Read " + ConsoleTab.rows(got, documents) + " in "
+        + Format.DURATION.text(Duration.ofNanos(took));
   }
 
   /** Why the tab cannot read, with what the user can do; null while it can. */
@@ -2254,7 +2255,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         .onUserScroll(() -> toLast = false);
     if (edited) {
       Predicate<Key> guard = k -> ResultEdits.rejectUnloadedKey(app, this, k);
-      grid.onKey(grid.onKey() == null ? guard : guard.or(grid.onKey()));
+      grid.onKeyFirst(guard);
     }
     return grid;
   }

@@ -58,6 +58,11 @@ record ShellSyntax(Theme.Code colors) implements Highlighter {
       }
 
       @Override
+      public String wordCharacters() {
+        return delegate.wordCharacters();
+      }
+
+      @Override
       public Function<String, Formatted> formatter() {
         return ShellSyntax::formatDocument;
       }
@@ -124,6 +129,12 @@ record ShellSyntax(Theme.Code colors) implements Highlighter {
   @Override
   public String lineComment() {
     return "//";
+  }
+
+  /** The dollar of an operator, as {@code $match}, belongs to its word. */
+  @Override
+  public String wordCharacters() {
+    return "$";
   }
 
   @Override

@@ -195,12 +195,11 @@ final class DocumentDialog {
             prefix + text,
             prefix.length() + Math.min(editor.caret(), text.length()),
             word));
-    var keys = completing.onKey();
-    return completing.onKey(k -> {
+    return completing.onKeyFirst(k -> {
       if (k.name().equals("Space") && k.modifiers() == Key.CONTROL) {
         suggestions.forget();
       }
-      return keys != null && keys.test(k);
+      return false;
     });
   }
 

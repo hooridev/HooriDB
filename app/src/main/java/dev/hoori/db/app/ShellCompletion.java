@@ -101,6 +101,12 @@ record ShellCompletion() implements Suggestions.Strategy {
       "collation",
       "comment");
 
+  /** An operator's dollar is not matched, so that {@code $set} also finds {@code $addToSet}. */
+  @Override
+  public String matched(String word) {
+    return word.startsWith("$") ? word.substring(1) : word;
+  }
+
   @Override
   public List<Suggestions.Candidate> candidates(
       Suggestions.Known known, String statement, int caret, String word) {
@@ -113,15 +119,13 @@ record ShellCompletion() implements Suggestions.Strategy {
         .toList();
     int n = code.size();
     var last = n > 0 && code.getLast().end() == before.length() ? code.getLast() : null;
-    if (last != null && is(before, code, n - 1, "$")) {
-      // The kit's word has no dollar: it stays, and the rest of the operator goes after it.
+    if (word.startsWith("$")) {
       return OPERATORS.stream()
-          .map(o -> new Suggestions.Candidate(
-              o.substring(1), o, o.substring(1), Symbol.CODE, "operator", false))
+          .map(o -> new Suggestions.Candidate(o.substring(1), o, o, Symbol.CODE, "operator", false))
           .toList();
     }
     if (last != null && last.kind() != Lexer.Kind.PUNCTUATION) {
-      return List.of(); // the word goes on a name or a number, as total$ or 1.
+      return List.of(); // the word goes on a name or a number, as 1.
     }
     boolean dot = n > 0 && code.getLast().is(before, '.');
     if (dot && is(before, code, n - 2, "db")) {

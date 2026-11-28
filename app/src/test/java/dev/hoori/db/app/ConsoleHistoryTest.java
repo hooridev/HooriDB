@@ -44,7 +44,6 @@ import java.time.ZoneId;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -134,7 +133,6 @@ class ConsoleHistoryTest {
   }
 
   @Test
-  @Disabled("An edit asked of an editor never built is lost: rethinkj/ui#545")
   void openInConsoleAddsToAKeptConsoleNeverShown() throws Exception {
     // The last one kept is the one shown; the console on shop was never built.
     new ConsoleStore(config())
@@ -227,7 +225,7 @@ class ConsoleHistoryTest {
     c.run(app, type("-- before\n\n-- after") + "key ArrowUp\n" + HISTORY + "snap history\n");
     String history = dialog(c.tree("history"));
     assertTrue(line(history, "role=dialog").contains("label=\"History of shop-prod\""), history);
-    assertTrue(line(history, "#history-search").contains("focused"), history);
+    assertTrue(line(history, "role=textbox label=\"Search\"").contains("focused"), history);
     assertTrue(cell(history, 0, 0).contains("\"" + ORDERS + "\""), history);
     assertTrue(cell(history, 3, 2).contains("\"4.0 ms\""), history);
     assertTrue(cell(history, 0, 3).contains("\"Cancelled\""), history);

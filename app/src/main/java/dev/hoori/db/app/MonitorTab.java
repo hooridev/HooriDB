@@ -766,8 +766,7 @@ final class MonitorTab implements Tab {
     actions.add(Card.spacer());
     if (view == View.VARIABLES || view == View.STATUS) {
       var of = view;
-      actions.add(TextField.withIcon(
-              TextField.textField(search(of), "Search", v -> searches.put(of, v)), Symbol.SEARCH)
+      actions.add(TextField.searchField(search(of), "Search", v -> searches.put(of, v))
           .key("search")
           .label("Search " + of.what)
           .w(8 * t.size().control()));
