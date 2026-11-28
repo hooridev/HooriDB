@@ -14,9 +14,11 @@ import dev.hoori.db.core.sql.Names;
 import dev.hoori.db.core.sql.Ranking;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -84,12 +86,21 @@ record SqlCompletion() implements Suggestions.Strategy {
     keywords(known, Keywords.offered(provider), candidates);
     schemas(known, candidates);
     tables(known, candidates);
+    // A column name that two of the statement's tables have is put in as the statement names
+    // its table, so that the server can tell which.
+    var named = new LinkedHashMap<Context.Reference, Table>();
+    var seen = new HashMap<String, Integer>();
     for (var reference : context.tables()) {
       var table = known.table(reference.schema(), reference.name());
       if (table != null) {
-        columns(known, table, candidates);
+        named.put(reference, table);
+        known
+            .columns(table)
+            .forEach(c -> seen.merge(c.name().toLowerCase(Locale.ROOT), 1, Integer::sum));
       }
     }
+    named.forEach((reference, table) ->
+        columns(known, table, qualifier(reference, provider), seen, candidates));
   }
 
   private record Side(Context.Reference ref, Table table, String qualifier) {
@@ -402,9 +413,9 @@ record SqlCompletion() implements Suggestions.Strategy {
   }
 
   /**
-   * The tables and views of its database: as they are on the search path, with their schema
-   * where they are not, so that the name inserted is one the server finds; those on the path
-   * first, so that a name that two schemas have is the one the server takes.
+   * The tables and views of its database: as they are where the search path finds them, with
+   * their schema where it does not or an earlier schema on it has the name, so that the name
+   * inserted is one the server takes for that table; those it finds first.
    */
   private static void tables(Suggestions.Known known, List<Suggestions.Candidate> into) {
     var provider = known.provider;
@@ -412,8 +423,13 @@ record SqlCompletion() implements Suggestions.Strategy {
     var qualified = new ArrayList<Suggestions.Candidate>();
     var tables = new ArrayList<>(known.tables());
     tables.sort(Comparator.comparingInt(table -> onPath(path, table)));
+    var bare = new ArrayList<String>(); // the names the search path finds, which shadow later ones
     for (var table : tables) {
-      if (!(table.container() instanceof Schema x) || path.contains(x.name())) {
+      if (!(table.container() instanceof Schema x)) {
+        tables(known, List.of(table), into);
+      } else if (path.contains(x.name())
+          && bare.stream().noneMatch(name -> known.same(name, table.name()))) {
+        bare.add(table.name());
         tables(known, List.of(table), into);
       } else {
         boolean view = table.kind() == Table.Kind.VIEW;
@@ -456,12 +472,25 @@ record SqlCompletion() implements Suggestions.Strategy {
   /** The table's columns, of the statement, with their types; read if need be. */
   private static void columns(
       Suggestions.Known known, Table table, List<Suggestions.Candidate> into) {
+    columns(known, table, null, Map.of(), into);
+  }
+
+  /** As above, a name that {@code seen} counts more than once put in after the qualifier. */
+  private static void columns(
+      Suggestions.Known known,
+      Table table,
+      String qualifier,
+      Map<String, Integer> seen,
+      List<Suggestions.Candidate> into) {
     for (var column : known.columns(table)) {
       var name = column.name();
+      var quoted = Names.quoted(name, known.provider);
       into.add(new Suggestions.Candidate(
           name,
           name,
-          Names.quoted(name, known.provider),
+          seen.getOrDefault(name.toLowerCase(Locale.ROOT), 0) > 1
+              ? qualifier + "." + quoted
+              : quoted,
           Symbol.COLUMN_SINGLE,
           column.type(),
           1,

@@ -377,6 +377,24 @@ class ConsoleEditorTest {
   }
 
   @Test
+  void aReadThatBringsLessThanItWantedIsNotAskedAgainByItself() throws Exception {
+    var keys = "foreign keys " + PG + "/shop.public.orders";
+    servers.fail(keys, FakeServers.notRead(CatalogException.Failure.ACCESS_DENIED));
+    var app = console.console(SHOP);
+    console.c.run(
+        app,
+        TREE + type("SELECT * FROM orders JOIN o") + "type \"r\"\nframe\nadvance 1\nframe\n"
+            + SETTLE + SETTLE + "snap settled\n");
+    long asked = servers.calls.stream().filter(keys::equals).count();
+    console.c.run(app, SETTLE + SETTLE + SETTLE + "snap later\n");
+    assertEquals(
+        asked, servers.calls.stream().filter(keys::equals).count(), servers.calls.toString());
+    var later = console.c.tree("later");
+    assertTrue(options(later).contains("orders"), later);
+    assertFalse(later.contains("#loading"), later);
+  }
+
+  @Test
   void theHighlightedTableShowsItsDocumentationBesideTheList() throws Exception {
     var app = console.console(SHOP);
     console.c.run(
@@ -416,6 +434,14 @@ class ConsoleEditorTest {
     assertEquals(List.of("id", "id"), options(repeated).subList(0, 2));
     var list = repeated.substring(repeated.indexOf("#completions"));
     assertTrue(list.contains("\"orders\"") && list.contains("\"customers\""), list);
+    // Each its own documentation, and put in as the statement names its table.
+    console.c.run(
+        app, DOCUMENTED + "snap first\nkey ArrowDown\nframe\n" + DOCUMENTED + "snap second\n");
+    assertTrue(console.c.tree("first").contains("In table public.orders"), console.c.tree("first"));
+    var second = console.c.tree("second");
+    assertTrue(second.contains("In table public.customers"), second);
+    console.c.run(app, "key Enter\nframe\n");
+    assertEquals("SELECT c.id FROM orders o JOIN customers c", console.tab(app).text);
   }
 
   /** A name that needs quotes is listed as it is and put in quoted. */
@@ -549,6 +575,31 @@ class ConsoleEditorTest {
     assertEquals(List.of("orders", "audit.orders"), options(orders).subList(0, 2));
     var list = orders.substring(orders.indexOf("#completions"));
     assertTrue(list.contains("text \"public\""), list);
+  }
+
+  @Test
+  void aTableThatAnEarlierSchemaOnTheSearchPathShadowsIsInsertedWithItsSchema() throws Exception {
+    servers.serve(PATHS, Provider.POSTGRESQL, "16.4", """
+        shop
+          shop_app
+            orders
+              *id: integer
+          public
+            @orders
+              total: numeric
+        """);
+    var app = console.console(AUDITED);
+    console.c.run(
+        app,
+        open("audited") + SETTLE + type("SELECT * FROM o") + "type \"r\"\n" + READ
+            + "snap shadowed\n");
+    var shadowed = console.c.tree("shadowed");
+    assertEquals(List.of("orders", "public.orders"), options(shadowed).subList(0, 2));
+    // The bare name is the table the server takes for it, which its detail names.
+    var list = shadowed.substring(shadowed.indexOf("#completions"));
+    assertTrue(list.contains("text \"shop_app\""), list);
+    console.c.run(app, "key ArrowDown\nframe\nkey Enter\nframe\n");
+    assertEquals("SELECT * FROM public.orders", console.tab(app).text);
   }
 
   @Test

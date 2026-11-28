@@ -54,6 +54,8 @@ final class Suggestions {
     }
   }
 
+  private record Asked(CatalogTree.Scan scan, Live live, long forgetting) {}
+
   /** A read that the entries wait for: a scan under way, or the tree's own read of the node. */
   private record Wait(Live live, Node node, Object read) {
     boolean pending(State s) {
@@ -85,7 +87,10 @@ final class Suggestions {
 
   private final ConsoleTab tab; // the console it suggests in, or null
   private final TableTab grid; // or the table tab whose clauses it suggests in, or null
-  private final Map<Node, CatalogTree.Scan> asked = new HashMap<>(); // the reads it started
+  // The reads it started, and the forgetting of their connection when it did: one that ended, even
+  // with less than it wanted, is not asked again until the user types, the list opens anew or the
+  // tree forgets what it read, so that no read repeats by itself.
+  private final Map<Node, Asked> asked = new HashMap<>();
   private CatalogTree catalog; // where they were asked, once they are
   // The last entries, and what they were made for: the list keeps them while only its highlight
   // moves, and until it closes.
@@ -117,13 +122,16 @@ final class Suggestions {
     var text = tab.text;
     int caret = Math.min(tab.editor.caret(), text.length());
     var keywordCase = s.settings.keywordCase();
-    if (entries != null
+    boolean same = entries != null
         && text.equals(madeFor)
         && caret == madeAt
         && word.equals(madeOf)
-        && keywordCase == madeCase
-        && !arrived(s)) {
+        && keywordCase == madeCase;
+    if (same && !arrived(s)) {
       return entries;
+    }
+    if (!same) {
+      askAgain();
     }
     // The statement the caret writes in, with the comments around it, from the console's split.
     var around = tab.statements(language, provider).around(caret);
@@ -145,13 +153,16 @@ final class Suggestions {
       State s, Provider provider, String database, String statement, int caret, String word) {
     int at = Math.min(caret, statement.length());
     var keywordCase = s.settings.keywordCase();
-    if (entries != null
+    boolean same = entries != null
         && statement.equals(madeFor)
         && at == madeAt
         && word.equals(madeOf)
-        && keywordCase == madeCase
-        && !arrived(s)) {
+        && keywordCase == madeCase;
+    if (same && !arrived(s)) {
       return entries;
+    }
+    if (!same) {
+      askAgain();
     }
     entries = make(s, Language.of(provider), provider, database, statement, at, word);
     made++;
@@ -175,6 +186,13 @@ final class Suggestions {
    */
   boolean loading(State s) {
     return waits.stream().anyMatch(w -> w.pending(s));
+  }
+
+  // The user typed or opened the list anew: what ended may be asked again, but not what failed.
+  private void askAgain() {
+    asked
+        .entrySet()
+        .removeIf(e -> e.getValue().live().scans.get(e.getKey()) != e.getValue().scan());
   }
 
   // Whether a read the last entries waited for has ended since, which makes them again.
@@ -251,7 +269,7 @@ final class Suggestions {
   /** Gives up the reads it asked for that have not delivered. */
   void close() {
     if (catalog != null) {
-      asked.forEach(catalog::stop);
+      asked.forEach((node, read) -> catalog.stop(node, read.scan()));
     }
     asked.clear();
   }
@@ -299,16 +317,19 @@ final class Suggestions {
      */
     private void want(Node node) {
       var mine = asked.get(node);
-      if (mine != null && live.scans.get(node) == mine) {
+      // A failed read is not tried again from here: the tree and the palette say why.
+      if (mine != null
+          && (live.scans.get(node) == mine.scan()
+              || mine.live() == live && mine.forgetting() == live.forgetting)) {
         waitFor(node);
-        return; // a failed read is not tried again from here: the tree and the palette say why
+        return;
       }
       catalog = s.catalog;
       var scan = node instanceof Node.OfTable t
           ? catalog.scan(s, t)
           : catalog.scan(s, (Node.OfDatabase) node);
       if (scan != null) {
-        asked.put(node, scan);
+        asked.put(node, new Asked(scan, live, live.forgetting));
       }
       waitFor(node);
     }
