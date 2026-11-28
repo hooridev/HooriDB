@@ -101,7 +101,7 @@ final class ResultsArea {
             i -> tab.shown = i < tab.outputs.size() ? tab.outputs.get(i) : null,
             i -> {},
             content,
-            Tabs.options().switchKeys(false))
+            Tabs.options().variant(Tabs.Variant.LINE).switchKeys(false))
         .key("results")
         .grow(1);
   }

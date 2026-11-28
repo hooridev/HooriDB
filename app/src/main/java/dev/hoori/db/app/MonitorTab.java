@@ -1106,11 +1106,13 @@ final class MonitorTab implements Tab {
         Menu.item(
                 Action.CANCEL.title + "…",
                 session != null && session.cancellable() ? () -> ask(Action.CANCEL, session) : null)
-            .icon(Symbol.DISMISS_CIRCLE),
+            .icon(Symbol.DISMISS_CIRCLE)
+            .danger(),
         Menu.item(
                 Action.END.title + "…",
                 session != null && session.ends() ? () -> ask(Action.END, session) : null)
-            .icon(Symbol.PROHIBITED),
+            .icon(Symbol.PROHIBITED)
+            .danger(),
         Menu.separator(),
         Menu.item("Refresh", lane == null ? null : () -> read(s)).icon(Symbol.ARROW_CLOCKWISE));
   }

@@ -1381,7 +1381,7 @@ final class ResultEdits {
         : editStatus(s, host, target);
     if (why != null) {
       // The line is short; the whole reason, as how to add an offset, shows on hover.
-      status.add(Tooltip.tooltip(
+      status.add(Tooltip.whenShortened(
           Label.label(Label.Variant.MUTED, why).key("edit-status").ellipsis(), why));
     }
     if (edits.editable == null || actions == null) {

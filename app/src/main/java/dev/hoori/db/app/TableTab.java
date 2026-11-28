@@ -1854,7 +1854,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     } else if (ofDocuments && fields != null) {
       String why = documentReadOnlyReason(s);
       if (why != null) {
-        end.add(Tooltip.tooltip(
+        end.add(Tooltip.whenShortened(
             Label.label(Label.Variant.MUTED, why).key("edit-status").ellipsis(), why));
       }
     }
@@ -2472,7 +2472,8 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         Menu.item("Copy document…", free && doc != null ? () -> openCopyDocument(s, doc) : null)
             .icon(Symbol.COPY),
         Menu.item("Delete document…", free && doc != null ? () -> openDeleteDocument(s, doc) : null)
-            .icon(Symbol.DELETE),
+            .icon(Symbol.DELETE)
+            .danger(),
         Menu.separator(),
         Menu.item("Insert document…", free ? () -> openInsertDocument(s) : null).icon(Symbol.ADD),
         Menu.separator(),
