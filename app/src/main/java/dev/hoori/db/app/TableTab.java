@@ -165,6 +165,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
   String said; // what the tab says for a while in its status line, in its own window; or null
   private int says;
   final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.CELLS);
+  final DataGrid.Find find = new DataGrid.Find();
   final Menu.State menu = new Menu.State();
   final Menu.State treeMenu = new Menu.State();
   final ValuePanel value = new ValuePanel();
@@ -2239,6 +2240,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
         .contextMenu(menu, (row, column) -> ForeignKeys.gridMenu(s, this, ofDocuments, row, column))
         // The user's newer selection, even when nothing scrolls: no jump to the end at the count.
         .onSelect(() -> toLast = false)
+        .find(app, find)
         .loading(this::gridRowLoaded, (from, to) -> wantGrid(s, from, to))
         // Nothing to do: the build it causes brings the footer's rows in view along.
         .onRowsInView((from, to) -> {});

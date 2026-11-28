@@ -446,6 +446,7 @@ final class ResultsArea {
         .fitColumns(o.fit)
         .rowNumbers()
         .copy(app.clipboard())
+        .find(app, o.find)
         .nullText(nullText)
         // Every copy whole; an editable result keeps the kit's limit, which also bounds a paste or
         // clear of a selection (rethinkj/ui#511).

@@ -142,6 +142,37 @@ class ConsoleTest {
   }
 
   @Test
+  void controlFFindsAValueInAResultAndInTheEditorItsText() throws Exception {
+    var app = console(SHOP);
+    c.run(app, type(ORDERS) + RUN + "press #sql\nkey F control\nframe\nadvance 1\nframe\n");
+    // In the editor, Control+F finds in its text.
+    var o = tab(app).outputs.getFirst();
+    assertFalse(o.find.isOpen(), "the editor's own find");
+    assertTrue(line(app.tree().dump(), "role=search").contains("Find"));
+    // Totals 13.49, 113.49 and 213.49 are in rows 10, 90 and 170 of the first portion; the row
+    // after it is not read, which find leaves out.
+    c.run(app, """
+        key Escape
+        frame
+        press #cell-0-0
+        key F control
+        frame
+        advance 1
+        frame
+        type "13.49"
+        frame
+        snap found
+        """);
+    String found = c.tree("found");
+    assertTrue(o.find.isOpen(), found);
+    assertTrue(line(found, "#count").contains("\"1 of 3+\""), found);
+    assertEquals(List.of(10, 1), List.of(o.selection.row(), o.selection.column()));
+    c.run(app, "key Enter\nframe\n");
+    assertEquals(90, o.selection.row());
+    assertFalse(servers.calls.contains("next " + PG + " " + ORDERS + " 200"), "find reads nothing");
+  }
+
+  @Test
   void controlEnterRunsTheStatementAtTheCaretAlone() throws Exception {
     var app = console(RED);
     c.run(app, "snap empty\n");

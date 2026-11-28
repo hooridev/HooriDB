@@ -136,6 +136,7 @@ final class ConsoleTab implements Tab, Guard.Guarded, ResultEdits.Host {
     float[] widths;
     final DataGrid.Fit fit = new DataGrid.Fit(); // once, in the first frame with rows
     final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.CELLS);
+    final DataGrid.Find find = new DataGrid.Find();
     // Of a server of documents, the documents of the rows, whole, and how they show.
     final List<Document> documents = new ArrayList<>();
     final boolean ofDocuments; // from the console's language as it ran, also where none came

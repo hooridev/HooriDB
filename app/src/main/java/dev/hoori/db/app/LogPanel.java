@@ -59,6 +59,7 @@ final class LogPanel {
   Split.Position split = SPLIT;
   Split.Position detail = DETAIL_SHARE;
   final DataGrid.Selection selection = new DataGrid.Selection(DataGrid.Mode.ROWS);
+  final DataGrid.Find find = new DataGrid.Find();
   LogFilter filter = LogFilter.ALL;
   boolean clearing; // Clear asks first
   private final Menu.State connections = new Menu.State();
@@ -374,6 +375,7 @@ final class LogPanel {
                 .select(selection)
                 .rowNumbers()
                 .copy(s.app.clipboard())
+                .find(s.app, find)
                 .onSelect(() -> {
                   int row = selection.row();
                   choose(
