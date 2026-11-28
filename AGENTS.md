@@ -75,7 +75,9 @@ foreign key references (reading what the
 tree lacks for the next hover), Control+B and Control+click on a table or column name to open its
 table in a tab (or the referenced table where the column is in one outgoing foreign key), Control+Alt+L to lay its SQL out, changing only white space, and completions of
 keywords, foreign-key joins and ON conditions, and the schemas, tables and columns the tree read or
-reads for it; it switches
+reads for it, the list waiting on its loading row while it reads, with the quick documentation of
+the table or column highlighted beside it, and a column's table or a table's schema after a name
+that two of them share; it switches
 databases and cancels what runs. It commits each statement by itself in Auto, and in Manual Commit
 and Rollback end the transaction, whose state it
 shows as the server says it, and as possibly open where the server has not said; closing it,
@@ -329,8 +331,11 @@ that GitHub-compatible REST API instead of api.github.com, to try updates betwee
   list opens from a word's second letter, and a `key Enter` after it takes a suggestion. Text that
   must go in as it is, in one edit, is pasted with `clipboard "…"` and `key V control`, as the
   console's tests do through `ConsoleTest.type`. A dot typed opens it at once, and Control+Space
-  anywhere. A list with nothing to show closes, so what the console reads for it shows at the next
-  keystroke.
+  anywhere. While what the console reads for it is under way, the list stays open on its loading
+  row, which keeps it open with nothing to show, and what the read brings shows in the frame after
+  the `await` that ends it, without another keystroke; a list with nothing to show and nothing to
+  wait for closes. The documentation beside it is made in the background after the tooltip's
+  delay, so a script runs `advance 1`, `frame`, `await` and `frame` before it looks.
 - A data grid tells the rows it built in the frame after the one that built them, so a script runs
   `frame` twice after `scroll`, and only then do the reads of those rows start. `FakeServers` makes
   up a table's rows from their position (`rows`, `values`), whose moments show in Europe/Berlin, as

@@ -10,6 +10,7 @@ import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Markdown;
 import com.rethinkj.ui.kit.MarkdownDocument;
 import com.rethinkj.ui.kit.Symbol;
+import dev.hoori.db.app.Suggestions.Target;
 import dev.hoori.db.core.catalog.Column;
 import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Index;
@@ -38,15 +39,31 @@ import java.util.Map;
 final class ConsoleEditor {
 
   private static final String PRIMARY_KEY = " · primary key";
+  private static final String DOCUMENTATION = "document a completion";
 
   private static final String ERROR_LAYER = "error";
   private static final String STATEMENTS_LAYER = "statements";
 
-  /** What a SQL name under the pointer or caret resolves to. */
-  private sealed interface Target {
-    record OfTable(Table table) implements Target {}
-
-    record OfColumn(Column column) implements Target {}
+  /**
+   * The documentation of a completion: of the entry, with what the tree had read of its table on
+   * the app's thread, for the kit to make on another thread.
+   */
+  private record Described(
+      Completion.Entry entry,
+      Target target,
+      List<Column> columns,
+      List<ForeignKey> keys,
+      List<Index> indexes,
+      Provider provider) {
+    MarkdownDocument of(Completion.Entry asked) {
+      if (!asked.equals(entry)) {
+        return null;
+      }
+      return switch (target) {
+        case Target.OfTable(var table) -> tableDoc(table, columns, keys, indexes, provider);
+        case Target.OfColumn(var column) -> columnDoc(column, keys, provider);
+      };
+    }
   }
 
   /** The last recorded outcome of one statement. */
@@ -78,6 +95,7 @@ final class ConsoleEditor {
   int markersBuilt; // how often statement markers were rebuilt, which a test counts
   private final Map<String, Table> navigable = new HashMap<>(); // targets handed to onOpen
   private final Completion.State completion = new Completion.State().openAfter(".");
+  private Described described; // the highlighted completion's documentation, or null
   final Suggestions suggestions;
 
   ConsoleEditor(ConsoleTab tab) {
@@ -200,14 +218,32 @@ final class ConsoleEditor {
   El editor(State s, App<State> app, Language language, Provider provider, El editor) {
     if (!completion.isOpen()) {
       suggestions.forget();
+      completion.loading(false);
     }
     completion.openAfter(language.opensCompletion());
-    El completing = Completion.complete(
-        app,
-        editor,
-        tab.editor.caret(),
-        completion,
-        word -> suggestions.at(s, language, provider, word));
+    boolean documented = provider != null && language instanceof Language.Sql;
+    if (!documented) {
+      described = null;
+      completion.documentation(null, null);
+    } else if (described != null
+        && !described.equals(described(s, provider, described.entry(), described.target()))) {
+      completion.documentation(null, null); // what it read since: the kit asks for it anew
+    }
+    if (documented) {
+      // Set before the list is built, which asks for the documentation of a new highlight.
+      completion.documentation(DOCUMENTATION, described == null ? e -> null : described::of);
+    }
+    El completing = Completion.complete(app, editor, tab.editor.caret(), completion, word -> {
+      var entries = suggestions.at(s, language, provider, word);
+      completion.loading(suggestions.loading(s));
+      return entries;
+    });
+    if (documented) {
+      int at = completion.highlight();
+      var target = completion.isOpen() ? suggestions.target(at) : null;
+      described = target == null ? null : described(s, provider, suggestions.entry(at), target);
+      completion.documentation(DOCUMENTATION, described == null ? e -> null : described::of);
+    }
     // Control+Space asks anew, with what was read since the list was made.
     return completing.onKeyFirst(k -> {
       if (k.name().equals("Space") && k.modifiers() == Key.CONTROL) {
@@ -251,6 +287,32 @@ final class ConsoleEditor {
             table, known.columns(table), known.foreignKeys(table), known.indexes(table), provider);
       case Target.OfColumn(var column) ->
         columnDoc(column, known.foreignKeys(column.table()), provider);
+    };
+  }
+
+  /**
+   * What the documentation of the entry shows, as the tree has read it; reads what it lacks, as
+   * quick documentation does, for the kit to ask for anew.
+   */
+  private Described described(State s, Provider provider, Completion.Entry entry, Target target) {
+    var known = suggestions.known(s, provider);
+    return switch (target) {
+      case Target.OfTable(var table) ->
+        new Described(
+            entry,
+            target,
+            List.copyOf(known.columns(table)),
+            List.copyOf(known.foreignKeys(table)),
+            List.copyOf(known.indexes(table)),
+            provider);
+      case Target.OfColumn(var column) ->
+        new Described(
+            entry,
+            target,
+            List.of(),
+            List.copyOf(known.foreignKeys(column.table())),
+            List.of(),
+            provider);
     };
   }
 

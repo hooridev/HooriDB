@@ -19,19 +19,48 @@ import java.util.UUID;
 /**
  * What an editor or clause field suggests at the caret, as its language's {@link Strategy} makes it
  * from what the tree has read of the connection and database. What it lacks it reads in the
- * background on the tree's connection, behind what the tree and the tabs ask for, and suggests at
- * the next keystroke; never on a console's own connection, which may be busy or in a transaction.
- * Closing the tab gives up those reads. Only the app's thread uses it.
+ * background on the tree's connection, behind what the tree and the tabs ask for, and makes the
+ * entries again as those reads, or the tree's, end; never on a console's own connection, which may
+ * be busy or in a transaction. Closing the tab gives up those reads. Only the app's thread uses it.
  */
 final class Suggestions {
 
+  /** What a SQL name stands for: a table or view, or a column. */
+  sealed interface Target {
+    record OfTable(Table table) implements Target {}
+
+    record OfColumn(Column column) implements Target {}
+  }
+
   /**
-   * A name it may suggest, as it is listed, and as it is put in, quoted where it needs to be; and
-   * its ranking priority (higher ranks first within prefix or substring matches).
+   * A name it may suggest, as it is listed, and as it is put in, quoted where it needs to be; its
+   * ranking priority (higher ranks first within prefix or substring matches); and the table or
+   * column it stands for, or null.
    */
-  record Candidate(String name, String shown, String text, Icon symbol, String kind, int priority) {
+  record Candidate(
+      String name,
+      String shown,
+      String text,
+      Icon symbol,
+      String kind,
+      int priority,
+      Target target) {
+    Candidate(String name, String shown, String text, Icon symbol, String kind, int priority) {
+      this(name, shown, text, symbol, kind, priority, null);
+    }
+
     Candidate(String name, String shown, String text, Icon symbol, String kind, boolean own) {
-      this(name, shown, text, symbol, kind, own ? 1 : 0);
+      this(name, shown, text, symbol, kind, own ? 1 : 0, null);
+    }
+  }
+
+  /** A read that the entries wait for: a scan under way, or the tree's own read of the node. */
+  private record Wait(Live live, Node node, Object read) {
+    boolean pending(State s) {
+      var now = read instanceof CatalogTree.Scan x
+          ? live.scans.get(node) == x && x.asked != null
+          : live.levels.get(node) == read;
+      return now && s.catalog.live(node.id()) == live;
     }
   }
 
@@ -61,6 +90,8 @@ final class Suggestions {
   // The last entries, and what they were made for: the list keeps them while only its highlight
   // moves, and until it closes.
   private List<Completion.Entry> entries;
+  private List<Target> targets; // what each of them stands for, or null
+  private List<Wait> waits = List.of(); // the reads they wait for
   private String madeFor;
   private int madeAt;
   private String madeOf;
@@ -90,7 +121,8 @@ final class Suggestions {
         && text.equals(madeFor)
         && caret == madeAt
         && word.equals(madeOf)
-        && keywordCase == madeCase) {
+        && keywordCase == madeCase
+        && !arrived(s)) {
       return entries;
     }
     // The statement the caret writes in, with the comments around it, from the console's split.
@@ -117,7 +149,8 @@ final class Suggestions {
         && statement.equals(madeFor)
         && at == madeAt
         && word.equals(madeOf)
-        && keywordCase == madeCase) {
+        && keywordCase == madeCase
+        && !arrived(s)) {
       return entries;
     }
     entries = make(s, Language.of(provider), provider, database, statement, at, word);
@@ -132,6 +165,31 @@ final class Suggestions {
   /** The list closed: the next one is made anew, with what was read meanwhile. */
   void forget() {
     entries = null;
+    targets = null;
+    waits = List.of();
+  }
+
+  /**
+   * Whether reads the last entries wait for are still under way, so that more may come: until
+   * they deliver, fail, or are given up.
+   */
+  boolean loading(State s) {
+    return waits.stream().anyMatch(w -> w.pending(s));
+  }
+
+  // Whether a read the last entries waited for has ended since, which makes them again.
+  private boolean arrived(State s) {
+    return !waits.stream().allMatch(w -> w.pending(s));
+  }
+
+  /** The entry at the index of the last made, or null. */
+  Completion.Entry entry(int index) {
+    return entries == null || index >= entries.size() ? null : entries.get(index);
+  }
+
+  /** What the entry at the index of the last made stands for, or null. */
+  Target target(int index) {
+    return targets == null || index >= targets.size() ? null : targets.get(index);
   }
 
   /** What the tree has read of the console's connection and database, asking for what it lacks. */
@@ -150,14 +208,44 @@ final class Suggestions {
       String word) {
     var strategy = language.completion();
     var known = new Known(s, provider, database, strategy.exactNames(provider));
-    return Ranking.rank(
-            strategy.candidates(known, statement, caret, word),
-            Candidate::name,
-            Candidate::priority,
-            strategy.matched(word))
-        .stream()
-        .map(c -> new Completion.Entry(c.shown(), c.symbol(), c.kind(), c.text()))
+    var ranked = Ranking.rank(
+        strategy.candidates(known, statement, caret, word),
+        Candidate::name,
+        Candidate::priority,
+        strategy.matched(word));
+    waits = List.copyOf(known.waits);
+    targets = ranked.stream().map(Candidate::target).toList();
+    // Where a name is that of two columns or tables, each says whose it is.
+    var named = new HashMap<String, Integer>();
+    ranked.forEach(c -> named.merge(repeats(c), 1, Integer::sum));
+    return ranked.stream()
+        .map(c -> new Completion.Entry(
+            c.shown(),
+            c.symbol(),
+            c.kind(),
+            c.text(),
+            c.target() != null && named.get(repeats(c)) > 1 ? whose(c.target()) : null,
+            -1,
+            -1,
+            List.of()))
         .toList();
+  }
+
+  // The key that tells a name repeated: a column's or a table's name as it is shown, or none.
+  private static String repeats(Candidate c) {
+    return switch (c.target()) {
+      case Target.OfColumn _ -> "column\0" + c.shown();
+      case Target.OfTable _ -> "table\0" + c.name();
+      case null -> "\0";
+    };
+  }
+
+  // Whose a repeated name is: a column's table, a table's schema or database.
+  private static String whose(Target target) {
+    return switch (target) {
+      case Target.OfColumn(var column) -> column.table().name();
+      case Target.OfTable(var table) -> table.container().name();
+    };
   }
 
   /** Gives up the reads it asked for that have not delivered. */
@@ -184,6 +272,7 @@ final class Suggestions {
     private final UUID connection;
     private Node.OfDatabase console; // the node of that name, or null, once looked up
     private boolean looked;
+    private final List<Wait> waits = new ArrayList<>(); // the reads what it gave waits for
 
     private Known(State s, Provider provider, String database, boolean exact) {
       this.s = s;
@@ -211,6 +300,7 @@ final class Suggestions {
     private void want(Node node) {
       var mine = asked.get(node);
       if (mine != null && live.scans.get(node) == mine) {
+        waitFor(node);
         return; // a failed read is not tried again from here: the tree and the palette say why
       }
       catalog = s.catalog;
@@ -220,9 +310,23 @@ final class Suggestions {
       if (scan != null) {
         asked.put(node, scan);
       }
+      waitFor(node);
+    }
+
+    // Notes the read of the node under way, a scan or the tree's own, which more may come from.
+    private void waitFor(Node node) {
+      Object read = live.scans.get(node) instanceof CatalogTree.Scan x && x.asked != null
+          ? x
+          : live.levels.get(node);
+      if (read instanceof CatalogTree.Scan || read instanceof CatalogTree.Reading) {
+        waits.add(new Wait(live, node, read));
+      }
     }
 
     private List<Node> read(Node node) {
+      if (live != null && live.levels.get(node) instanceof CatalogTree.Reading) {
+        waitFor(node);
+      }
       return live != null && live.levels.get(node) instanceof CatalogTree.Read(var children)
           ? children
           : List.of();

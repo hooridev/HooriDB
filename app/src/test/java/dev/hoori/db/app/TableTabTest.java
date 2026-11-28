@@ -1438,8 +1438,10 @@ class TableTabTest {
         appendedTree);
     assertTrue(line(appendedTree, "#sql").contains("focused"), appendedTree);
     // Typing goes right after the appended statement.
-    c.run(app, "type \" LIMIT 10\"\nframe\n");
+    // The list that typing opened waits for the read it started, and then closes with nothing.
+    c.run(app, "type \" LIMIT 10\"\nframe\n" + SETTLE + "snap typed\n");
     assertEquals(appended + " LIMIT 10", console.text);
+    assertFalse(c.tree("typed").contains("#completions"), c.tree("typed"));
 
     // A statement left open is closed before the blank line; a blank line at the end is kept as
     // the one before the statement.

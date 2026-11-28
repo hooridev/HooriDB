@@ -180,21 +180,21 @@ final class DocumentDialog {
   private El completing(State s, App<State> app, Provider provider, El code) {
     if (!completion.isOpen()) {
       suggestions.forget();
+      completion.loading(false);
     }
     var prefix = "db.getCollection(" + Shell.quote(collection.name()) + ").insertOne(";
     var database = collection.container().database().name();
-    El completing = Completion.complete(
-        app,
-        code,
-        editor.caret(),
-        completion,
-        word -> suggestions.at(
-            s,
-            provider,
-            database,
-            prefix + text,
-            prefix.length() + Math.min(editor.caret(), text.length()),
-            word));
+    El completing = Completion.complete(app, code, editor.caret(), completion, word -> {
+      var entries = suggestions.at(
+          s,
+          provider,
+          database,
+          prefix + text,
+          prefix.length() + Math.min(editor.caret(), text.length()),
+          word);
+      completion.loading(suggestions.loading(s));
+      return entries;
+    });
     return completing.onKeyFirst(k -> {
       if (k.name().equals("Space") && k.modifiers() == Key.CONTROL) {
         suggestions.forget();

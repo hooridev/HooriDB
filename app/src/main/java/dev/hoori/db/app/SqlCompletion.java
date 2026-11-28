@@ -66,10 +66,12 @@ record SqlCompletion() implements Suggestions.Strategy {
       }
       default -> any(known, provider, context, candidates);
     }
-    // A name of several tables or schemas is put in once for each kind of thing.
+    // A name of several tables or schemas is put in once for each kind of thing; a column's once
+    // for each table, which its entry names.
     var once = new LinkedHashMap<String, Suggestions.Candidate>();
     for (var c : candidates) {
-      once.putIfAbsent(c.text() + "\0" + c.symbol(), c);
+      var of = c.target() instanceof Suggestions.Target.OfColumn(var column) ? column.table() : "";
+      once.putIfAbsent(c.text() + "\0" + c.symbol() + "\0" + of, c);
     }
     return List.copyOf(once.values());
   }
@@ -421,7 +423,8 @@ record SqlCompletion() implements Suggestions.Strategy {
             Names.quoted(x.name(), provider) + "." + Names.quoted(table.name(), provider),
             view ? Symbol.EYE : Symbol.TABLE,
             view ? "view" : "table",
-            false));
+            0,
+            new Suggestions.Target.OfTable(table)));
       }
     }
     into.addAll(qualified);
@@ -439,8 +442,14 @@ record SqlCompletion() implements Suggestions.Strategy {
       Suggestions.Known known, List<Table> tables, List<Suggestions.Candidate> into) {
     for (var table : tables) {
       boolean view = table.kind() == Table.Kind.VIEW;
-      into.add(candidate(
-          known, table.name(), view ? Symbol.EYE : Symbol.TABLE, view ? "view" : "table"));
+      into.add(new Suggestions.Candidate(
+          table.name(),
+          table.name(),
+          Names.quoted(table.name(), known.provider),
+          view ? Symbol.EYE : Symbol.TABLE,
+          view ? "view" : "table",
+          0,
+          new Suggestions.Target.OfTable(table)));
     }
   }
 
@@ -455,7 +464,8 @@ record SqlCompletion() implements Suggestions.Strategy {
           Names.quoted(name, known.provider),
           Symbol.COLUMN_SINGLE,
           column.type(),
-          true));
+          1,
+          new Suggestions.Target.OfColumn(column)));
     }
   }
 
