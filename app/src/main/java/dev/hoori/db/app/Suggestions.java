@@ -244,7 +244,7 @@ final class Suggestions {
         Candidate::name,
         Candidate::priority,
         strategy.matched(word));
-    waits = List.copyOf(known.waits);
+    waits = List.copyOf(known.waited);
     targets = ranked.stream().map(Candidate::target).toList();
     // Where a name is that of two columns or tables, each says whose it is.
     var named = new HashMap<String, Integer>();
@@ -305,7 +305,7 @@ final class Suggestions {
     private final UUID connection;
     private Node.OfDatabase console; // the node of that name, or null, once looked up
     private boolean looked;
-    private final List<Wait> waits = new ArrayList<>(); // the reads what it gave waits for
+    private final List<Wait> waited = new ArrayList<>(); // the reads what it gave waits for
 
     private Known(State s, Provider provider, String database, boolean exact) {
       this.s = s;
@@ -360,7 +360,7 @@ final class Suggestions {
           ? x
           : live.levels.get(node);
       if (read instanceof CatalogTree.Scan || read instanceof CatalogTree.Reading) {
-        waits.add(new Wait(live, node, read));
+        waited.add(new Wait(live, node, read));
       }
     }
 

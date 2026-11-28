@@ -460,24 +460,16 @@ record SqlCompletion() implements Suggestions.Strategy {
         // While an earlier schema on the path is not read, the server may take another table
         // for the name: the entry claims none.
         boolean sure = found.computeIfAbsent(x.name(), known::unshadowed);
-        boolean view = table.kind() == Table.Kind.VIEW;
-        into.add(new Suggestions.Candidate(
-            table.name(),
+        into.add(candidate(
+            table,
             table.name(),
             Names.quoted(table.name(), provider),
-            view ? Symbol.EYE : Symbol.TABLE,
-            view ? "view" : "table",
-            0,
             sure ? new Suggestions.Target.OfTable(table) : null));
       } else {
-        boolean view = table.kind() == Table.Kind.VIEW;
-        qualified.add(new Suggestions.Candidate(
-            table.name(),
+        qualified.add(candidate(
+            table,
             x.name() + "." + table.name(),
             Names.quoted(x.name(), provider) + "." + Names.quoted(table.name(), provider),
-            view ? Symbol.EYE : Symbol.TABLE,
-            view ? "view" : "table",
-            0,
             new Suggestions.Target.OfTable(table)));
       }
     }
@@ -495,16 +487,26 @@ record SqlCompletion() implements Suggestions.Strategy {
   private static void tables(
       Suggestions.Known known, List<Table> tables, List<Suggestions.Candidate> into) {
     for (var table : tables) {
-      boolean view = table.kind() == Table.Kind.VIEW;
-      into.add(new Suggestions.Candidate(
-          table.name(),
+      into.add(candidate(
+          table,
           table.name(),
           Names.quoted(table.name(), known.provider),
-          view ? Symbol.EYE : Symbol.TABLE,
-          view ? "view" : "table",
-          0,
           new Suggestions.Target.OfTable(table)));
     }
+  }
+
+  /** A table or view, as it is listed and put in, standing for the target, or null for none. */
+  private static Suggestions.Candidate candidate(
+      Table table, String shown, String text, Suggestions.Target target) {
+    boolean view = table.kind() == Table.Kind.VIEW;
+    return new Suggestions.Candidate(
+        table.name(),
+        shown,
+        text,
+        view ? Symbol.EYE : Symbol.TABLE,
+        view ? "view" : "table",
+        0,
+        target);
   }
 
   /** The table's columns, of the statement, with their types; read if need be. */
