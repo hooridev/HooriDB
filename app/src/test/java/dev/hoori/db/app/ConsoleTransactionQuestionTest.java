@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.hoori.db.core.catalog.CatalogException;
+import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.Provider;
 import dev.hoori.db.core.execution.Failure;
@@ -205,6 +206,25 @@ class ConsoleTransactionQuestionTest extends ConsoleTransactions {
     c.run(app, exit + "press #answer-rollback\nframe\n" + OPENED + SETTLE);
     assertTrue(servers.calls.contains("run " + PG + " ROLLBACK"), servers.calls.toString());
     assertTrue(app.windows().all().isEmpty());
+  }
+
+  @Test
+  void closingHooriDbAsksAboveAnOpenExport() throws Exception {
+    var app = open(SHOP);
+    ExportDialog.open(app.state(), SHOP.id(), new Database("shop", false));
+    c.run(app, "frame\n" + OPENED + SETTLE + "snap export\n");
+    assertTrue(c.tree("export").contains("export-dialog"), c.tree("export"));
+    app.state().requestClose(); // the window's close button, under the dialog
+    // The export fades out, and then the question in.
+    c.run(app, "frame\n" + OPENED + OPENED + OPENED + "snap asked\n");
+    String asked = c.tree("asked");
+    assertTrue(asked.contains("before HooriDB closes."), asked);
+    // The export gave way, as it fades out.
+    assertTrue(
+        asked.lines().noneMatch(l -> l.contains("#export-dialog") && !l.contains("exiting")),
+        asked);
+    c.run(app, "press #answer-cancel\nframe\n" + OPENED + SETTLE + "snap stayed\n");
+    assertTrue(c.tree("stayed").contains("export-dialog"), c.tree("stayed"));
   }
 
   @Test

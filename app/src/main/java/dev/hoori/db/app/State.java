@@ -1043,6 +1043,9 @@ final class State {
     exitAt = noticed;
     consoles(null).forEach(ConsoleTab::end);
     monitors(null).forEach(m -> m.end(this));
+    if (dialogs.export != null) {
+      dialogs.export.close(this); // an export can be done again, and leaves no file
+    }
     int at = ++exits;
     app.after(EXIT_SECONDS, () -> {
       if (exits == at && guard.quitting() && closing > waived) {
@@ -1366,10 +1369,16 @@ final class State {
     }
   }
 
-  /** The connection ended: what its tabs asked of it ends too, and what they read stays. */
+  /**
+   * The connection ended: what its tabs asked of it ends too, and what they read stays; its export
+   * closes with its session.
+   */
   void ended(UUID id) {
     tables(id).forEach(TableTab::stop);
     monitors(id).forEach(m -> m.end(this));
+    if (dialogs.export != null && dialogs.export.id.equals(id)) {
+      dialogs.export.close(this);
+    }
   }
 
   /** The connection could not be connected: its consoles that waited for it say so. */
@@ -1635,6 +1644,9 @@ final class State {
     tables(null).forEach(TableTab::close);
     consoles(null).forEach(ConsoleTab::close);
     monitors(null).forEach(MonitorTab::close);
+    if (dialogs.export != null) {
+      dialogs.export.close(this);
+    }
     catalog.closeAll(); // nothing waits for a server
     for (Windows.Handle window : app.windows().all()) {
       window.close();

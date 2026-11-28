@@ -19,6 +19,9 @@ import dev.hoori.db.core.data.Rows;
 import dev.hoori.db.core.document.DocumentEdit;
 import dev.hoori.db.core.document.Script;
 import dev.hoori.db.core.driver.LoadedDriver;
+import dev.hoori.db.core.dump.Dump;
+import dev.hoori.db.core.dump.Exporter;
+import dev.hoori.db.core.dump.Listed;
 import dev.hoori.db.core.execution.Abandoned;
 import dev.hoori.db.core.execution.Portion;
 import dev.hoori.db.core.execution.Status;
@@ -32,6 +35,9 @@ import dev.hoori.db.core.monitor.Monitor;
 import dev.hoori.db.core.monitor.ServerSession;
 import dev.hoori.db.core.monitor.ServerVariable;
 import dev.hoori.db.core.query.QueryException;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
@@ -321,6 +327,34 @@ record Recorded(Servers servers, StatementLog log) implements Servers {
         @Override
         public Optional<List<Block>> locks() throws QueryException {
           return monitor.locks();
+        }
+      };
+    }
+
+    // What the export sends, logged about the database it exports.
+    @Override
+    public Exporter exporter() throws QueryException {
+      var exporter = link.exporter();
+      return new Exporter() {
+        @Override
+        public List<Listed> list(Container container) throws QueryException {
+          return recorded(of(container), () -> exporter.list(container));
+        }
+
+        @Override
+        public Dump.Written write(Dump.Choice choice, Path file, Dump.Progress progress)
+            throws QueryException, IOException {
+          try {
+            return recorded(choice.database().name(), () -> {
+              try {
+                return exporter.write(choice, file, progress);
+              } catch (IOException e) {
+                throw new UncheckedIOException(e); // one kind of failure through the journal
+              }
+            });
+          } catch (UncheckedIOException e) {
+            throw e.getCause();
+          }
         }
       };
     }

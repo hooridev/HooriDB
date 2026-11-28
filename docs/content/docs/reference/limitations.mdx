@@ -29,7 +29,17 @@ HooriDB is in early development. The list below covers what it cannot do yet.
 - On PostgreSQL, code completions assume the default search path (`"$user", public`) and do not follow custom `search_path` settings. Tables in system schemas appear in completions only after you expand them in Workspace.
 - Statements longer than 64 KB are not recorded in History, and History keeps at most 1,000 statements per connection.
 - You cannot copy rows from the **Messages** tab.
-- There is no SQL formatter, data import/export, or visual query plan viewer.
+- There is no SQL formatter, data import, or visual query plan viewer. Data are exported only as a file of SQL (see [Export to SQL](#export-to-sql)).
+
+## Export to SQL
+
+- Not exported: PostgreSQL types of their own (enums, domains, composite types), extensions, owners, grants, and foreign tables; MySQL and MariaDB events. A table or policy that uses them, or a role, needs them to exist where the file is read.
+- On PostgreSQL, a partition or a child table whose generated column has an expression other than its table's gets it with `ALTER COLUMN … SET EXPRESSION`, which needs PostgreSQL 17 or later where the file is read.
+- On MySQL and MariaDB, what a view reads is found from the names in its definition, so a view with a common table expression named like another table or view may come out of order.
+- **Data only** reads rows into tables that the structure created, with their triggers:
+  - On PostgreSQL, the file turns off each table's triggers and forced row security, and drops constraints that are not valid, before the rows, and puts them back after them. Only the tables' owner, or a superuser, can read it back.
+  - On MySQL and MariaDB, a table's triggers cannot be turned off for a session, so the export refuses the data alone of a table that has triggers. Export its data with its structure, or leave it out.
+- The rows are read without row security on PostgreSQL: a user whose policies would hide rows gets an error rather than a file with rows missing. Export as the tables' owner where row security is not forced on them, else as a superuser or a role with `BYPASSRLS`.
 
 ## MongoDB
 

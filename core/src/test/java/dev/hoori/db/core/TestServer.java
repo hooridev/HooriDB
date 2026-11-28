@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import org.testcontainers.DockerClientFactory;
+import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.containers.wait.strategy.WaitStrategy;
@@ -146,6 +147,32 @@ public final class TestServer {
 
   public LoadedDriver driver() {
     return driver(provider);
+  }
+
+  /**
+   * Runs the server's own client in its container on the file, as root on MariaDB and MySQL and as
+   * {@link #USER} on PostgreSQL, on the database, stopping at the first error: what it wrote and
+   * whether it ended well.
+   */
+  public Container.ExecResult client(Path file, String database) throws Exception {
+    var in = "/tmp/" + file.getFileName();
+    container.copyFileToContainer(MountableFile.forHostPath(file), in);
+    var command = switch (provider) {
+      case POSTGRESQL ->
+        new String[] {"psql", "-v", "ON_ERROR_STOP=1", "-q", "-U", USER, "-d", database, "-f", in};
+      case MARIADB, MYSQL ->
+        new String[] {
+          "sh",
+          "-c",
+          (provider == Provider.MARIADB ? "mariadb" : "mysql") + " -uroot -p'root-" + PASSWORD
+              + "' --default-character-set=utf8mb4 \"$1\" < \"$2\"",
+          "client",
+          database,
+          in
+        };
+      case MONGODB -> throw new IllegalArgumentException("MongoDB has no client of SQL");
+    };
+    return container.execInContainer(command);
   }
 
   // Exactly the version the build configures: earlier copies stay in the folder.

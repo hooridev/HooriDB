@@ -1,6 +1,7 @@
 package dev.hoori.db.core.dialect;
 
 import dev.hoori.db.core.data.RowsDialect;
+import dev.hoori.db.core.dump.DumpDialect;
 
 /**
  * Everything a provider of SQL does its own way, by concern: a server of tables reached through
@@ -31,4 +32,7 @@ public non-sealed interface Dialect extends Traits {
 
   /** How its servers tell what their sessions do. */
   MonitorDialect monitor();
+
+  /** How its objects and their rows are exported to a file of SQL. */
+  DumpDialect dump();
 }

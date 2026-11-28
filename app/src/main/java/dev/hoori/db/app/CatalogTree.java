@@ -12,6 +12,7 @@ import com.rethinkj.ui.kit.TabGroups;
 import com.rethinkj.ui.kit.Tree;
 import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.catalog.Column;
+import dev.hoori.db.core.catalog.Container;
 import dev.hoori.db.core.catalog.Database;
 import dev.hoori.db.core.catalog.ForeignKey;
 import dev.hoori.db.core.catalog.Index;
@@ -840,6 +841,18 @@ final class CatalogTree {
    * runs on it never holds up the tree or a table tab.
    */
   Session session(State s, UUID id, String database) {
+    return session(s, id, database, false);
+  }
+
+  /**
+   * A session as {@link #session} opens it, read-only at the server as the tree's are, for what
+   * only reads, such as an export: what it runs cannot change the server's data.
+   */
+  Session browsingSession(State s, UUID id, String database) {
+    return session(s, id, database, true);
+  }
+
+  private Session session(State s, UUID id, String database, boolean readOnly) {
     var live = lives.get(id);
     if (live == null || !(live.phase instanceof Live.Connected)) {
       return null;
@@ -847,6 +860,9 @@ final class CatalogTree {
     // A console finds a lost connection in what its statements give, not through the tree.
     var lane = new Lane(e -> {});
     var profile = database.isEmpty() ? live.profile : live.profile.withDatabase(database);
+    if (readOnly) {
+      profile = browsing(profile);
+    }
     lane.open(servers, profile, live.password, live.driver, s.settings.connectTimeout());
     return new Session(lane, live.driver, live.password.clone());
   }
@@ -1602,6 +1618,9 @@ final class CatalogTree {
             Menu.item("Open", () -> s.openTable(n.id(), n.table())).icon(Symbol.TABLE),
             refresh,
             copy);
+      case Node.OfDatabase(var id, var database) ->
+        exportable(s, id, database, connected, refresh, copy);
+      case Node.OfSchema(var id, var schema) -> exportable(s, id, schema, connected, refresh, copy);
       case Node.ForeignKeys(var id, var table) ->
         List.of(Menu.item(
                 "Refresh", connected ? () -> refresh(s, new Node.OfTable(id, table)) : null)
@@ -1618,6 +1637,25 @@ final class CatalogTree {
       case Node.OfIndex _ -> List.of(copy);
       default -> List.of(refresh, copy);
     };
+  }
+
+  /** The menu of a database or schema: Export to SQL, where its server speaks SQL, and the rest. */
+  private static List<Menu.Item> exportable(
+      State s, UUID id, Container container, boolean connected, Menu.Item refresh, Menu.Item copy) {
+    var profile = s.profile(id);
+    if (profile == null || profile.provider().keepsDocuments()) {
+      return List.of(refresh, copy);
+    }
+    return List.of(
+        Menu.item(
+                "Export to SQL…",
+                connected && !s.dialogs.anyOpen()
+                    ? () -> ExportDialog.open(s, id, container)
+                    : null)
+            .icon(Symbol.ARROW_EXPORT_LTR),
+        Menu.separator(),
+        refresh,
+        copy);
   }
 
   /**

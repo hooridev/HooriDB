@@ -189,6 +189,8 @@ class ChangesTest {
     assertEquals("'\\x00ff'", pg.literal(new Binary(new byte[] {0, -1}, 2)));
     assertEquals("X'00ff'", my.literal(new Binary(new byte[] {0, -1}, 2)));
     assertEquals("TRUE", my.literal(true));
+    assertEquals("'it''s \\\\ a\\0b\\Z'", my.literal("it's \\ a\0b\032"));
+    assertEquals("E'it''s \\\\ a'", pg.literal("it's \\ a"));
     assertThrows(IllegalArgumentException.class, () -> pg.literal(1));
   }
 

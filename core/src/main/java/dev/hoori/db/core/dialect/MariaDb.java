@@ -13,6 +13,8 @@ import dev.hoori.db.core.connection.Tls;
 import dev.hoori.db.core.data.MariaDbRows;
 import dev.hoori.db.core.data.RowsDialect;
 import dev.hoori.db.core.driver.Driver;
+import dev.hoori.db.core.dump.DumpDialect;
+import dev.hoori.db.core.dump.MySqlFamilyDump;
 import dev.hoori.db.core.sql.Statements;
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -77,6 +79,7 @@ public final class MariaDb extends MySqlFamily {
   private final PlanDialect planning = new Plan();
   private final SessionDialect session = new Session();
   private final RowsDialect rows = new MariaDbRows();
+  private final DumpDialect dump = new MySqlFamilyDump(true);
   private final MonitorDialect monitor = new MySqlFamily.Monitor(
       "TIME_MS / 1000",
       "SELECT LOWER(VARIABLE_NAME), GLOBAL_VALUE, GLOBAL_VALUE_ORIGIN"
@@ -146,6 +149,11 @@ public final class MariaDb extends MySqlFamily {
   @Override
   public MonitorDialect monitor() {
     return monitor;
+  }
+
+  @Override
+  public DumpDialect dump() {
+    return dump;
   }
 
   // MariaDB's plan gives only the rows read of each table: the product over the tables of each
