@@ -22,6 +22,7 @@ import com.rethinkj.ui.Cursor;
 import com.rethinkj.ui.El;
 import com.rethinkj.ui.Script;
 import com.rethinkj.ui.kit.Theme;
+import dev.hoori.db.core.catalog.CatalogException;
 import dev.hoori.db.core.connection.Color;
 import dev.hoori.db.core.connection.ConnectionProfile;
 import dev.hoori.db.core.connection.Provider;
@@ -36,6 +37,7 @@ import java.util.List;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -317,7 +319,7 @@ class ConsoleEditorTest {
             + "key A control\nkey Delete\n" + type("SELECT  FROM orders o") + "key Home\n"
             + "key ArrowRight\n".repeat(7) + "type \"o.\"\nframe\nadvance 1\nframe\nsnap columns\n"
             + "key Escape\nkey A control\nkey Delete\n" + type("SELECT 1")
-            + "type \".\"\nframe\nadvance 1\nframe\nsnap number\n");
+            + "type \".\"\nframe\nadvance 1\nframe\n" + SETTLE + "snap number\n");
     assertEquals(List.of("customers", "order_totals", "orders"), options(console.c.tree("tables")));
     assertEquals(
         List.of("customer_id", "id", "placed_at", "total"), options(console.c.tree("columns")));
@@ -325,16 +327,26 @@ class ConsoleEditorTest {
   }
 
   @Test
-  void whatIsNotReadYetIsReadOnTheTreesConnectionAndOfferedAtTheNextKeystroke() throws Exception {
+  void whatIsNotReadYetIsReadOnTheTreesConnectionWhileTheListWaitsOnItsLoadingRow()
+      throws Exception {
     var app = console.console(SHOP);
     var tables = "all tables " + PG + "/shop";
+    var held = servers.hold(tables);
     console.c.run(
         app,
         open("shop-prod") + SETTLE + type("SELECT * FROM o") + "type \"r\"\n"
-            + "frame\nsnap unread\n");
-    // Nothing of shop is read yet, so nothing fits: the list stays closed while it is read.
-    assertEquals(List.of(), options(console.c.tree("unread")));
-    console.c.run(app, SETTLE + "type \"d\"\nframe\nadvance 1\nframe\nsnap read\n");
+            + "frame\nadvance 1\nframe\nsnap unread\n");
+    // Nothing of shop is read yet: the list stays open on its loading row while it is read.
+    var unread = console.c.tree("unread");
+    assertEquals(List.of(), options(unread));
+    assertTrue(unread.contains("#completions") && unread.contains("#loading"), unread);
+    held.countDown();
+    // What the read brought shows without another keystroke.
+    console.c.run(app, SETTLE + "frame\nsnap arrived\n");
+    var arrived = console.c.tree("arrived");
+    assertEquals(List.of("order_totals", "orders"), options(arrived).subList(0, 2));
+    assertFalse(arrived.contains("#loading"), arrived);
+    console.c.run(app, "type \"d\"\nframe\nadvance 1\nframe\nsnap read\n");
     assertEquals(List.of("order_totals", "orders"), options(console.c.tree("read")));
     assertEquals(
         1, servers.calls.stream().filter(tables::equals).count(), servers.calls.toString());
@@ -349,6 +361,145 @@ class ConsoleEditorTest {
     assertTrue(
         servers.calls.contains("columns " + PG + "/shop.public.orders"), servers.calls.toString());
     assertEquals("total", options(console.c.tree("columns")).getFirst());
+  }
+
+  @Test
+  void aFailedReadEndsTheLoadingRowAndLeavesWhatTheListHas() throws Exception {
+    var app = console.console(SHOP);
+    servers.fail(
+        "all tables " + PG + "/shop", FakeServers.notRead(CatalogException.Failure.ACCESS_DENIED));
+    console.c.run(
+        app,
+        open("shop-prod") + SETTLE + type("SELECT o") + "type \"r\"\n" + SETTLE
+            + "frame\nsnap failed\n");
+    var failed = console.c.tree("failed");
+    assertTrue(options(failed).contains("ORDER"), failed);
+    assertFalse(failed.contains("#loading"), failed);
+  }
+
+  @Test
+  void aReadThatBringsLessThanItWantedIsNotAskedAgainByItself() throws Exception {
+    var keys = "foreign keys " + PG + "/shop.public.orders";
+    servers.fail(keys, FakeServers.notRead(CatalogException.Failure.ACCESS_DENIED));
+    var app = console.console(SHOP);
+    console.c.run(
+        app,
+        TREE + type("SELECT * FROM orders JOIN o") + "type \"r\"\nframe\nadvance 1\nframe\n"
+            + SETTLE + SETTLE + "snap settled\n");
+    long asked = servers.calls.stream().filter(keys::equals).count();
+    console.c.run(app, SETTLE + SETTLE + SETTLE + "snap later\n");
+    assertEquals(
+        asked, servers.calls.stream().filter(keys::equals).count(), servers.calls.toString());
+    var later = console.c.tree("later");
+    assertTrue(options(later).contains("orders"), later);
+    assertFalse(later.contains("#loading"), later);
+  }
+
+  @Test
+  void theHighlightedTableShowsItsDocumentationBesideTheList() throws Exception {
+    var app = console.console(SHOP);
+    console.c.run(
+        app,
+        TREE + type("SELECT * FROM or") + "type \"d\"\nframe\nadvance 1\nframe\n"
+            + "key ArrowDown\nframe\n" + DOCUMENTED + "snap orders\n");
+    var orders = console.c.tree("orders");
+    assertEquals(List.of("order_totals", "orders"), options(orders));
+    assertTrue(orders.contains("#documentation"), orders);
+    assertTrue(orders.contains("Table public.orders"), orders);
+    assertTrue(orders.contains("total numeric(12,2)"), orders);
+  }
+
+  @Test
+  @Disabled("The documentation of an unchanged entry is not asked again: rethinkj/ui#947")
+  void theDocumentationOfATableWhoseColumnsWereUnreadShowsThemWhileTheHighlightStays()
+      throws Exception {
+    var app = console.console(SHOP);
+    // The table at first, which reads its columns, and once they are, its columns.
+    console.c.run(
+        app,
+        TREE + type("SELECT * FROM cu") + "type \"s\"\n" + "frame\nadvance 1\nframe\n" + DOCUMENTED
+            + DOCUMENTED + "snap read\n");
+    assertTrue(
+        servers.calls.contains("columns " + PG + "/shop.public.customers"),
+        servers.calls.toString());
+    var read = console.c.tree("read");
+    assertTrue(read.contains("email character varying(255)"), read);
+  }
+
+  /** The documentation's delay, its work, and the frame that shows it. */
+  static final String DOCUMENTED = "advance 1\nframe\nawait\nframe\nadvance 1\nframe\n";
+
+  @Test
+  void aColumnOfTwoTablesIsListedForEachWithItsTable() throws Exception {
+    var app = console.console(SHOP);
+    var sql = "SELECT i FROM orders o JOIN customers c";
+    console.c.run(
+        app,
+        TREE + type(sql) + "key Home\n" + "key ArrowRight\n".repeat(8) + "type \"d\"\n" + READ
+            + "snap repeated\n");
+    var repeated = console.c.tree("repeated");
+    assertEquals(List.of("id", "id"), options(repeated).subList(0, 2));
+    var list = repeated.substring(repeated.indexOf("#completions"));
+    // The alias names the table, and the documentation follows the highlight.
+    assertTrue(list.contains("text \"o\"") && list.contains("text \"c\""), list);
+    console.c.run(
+        app, DOCUMENTED + "snap first\nkey ArrowDown\nframe\n" + DOCUMENTED + "snap second\n");
+    assertTrue(console.c.tree("first").contains("In table public.orders"), console.c.tree("first"));
+    var second = console.c.tree("second");
+    assertTrue(second.contains("In table public.customers"), second);
+    console.c.run(app, "key Enter\nframe\n");
+    assertEquals("SELECT id FROM orders o JOIN customers c", console.tab(app).text);
+  }
+
+  @Test
+  void anAliasOfTwoTablesInAUnionNamesEachColumnByItsTable() throws Exception {
+    var app = console.console(SHOP);
+    var sql = "SELECT i FROM orders t UNION ALL SELECT id FROM customers t";
+    console.c.run(
+        app,
+        TREE + type(sql) + "key Home\n" + "key ArrowRight\n".repeat(8) + "type \"d\"\n" + READ
+            + DOCUMENTED + "snap first\nkey ArrowDown\nframe\n" + DOCUMENTED + "snap second\n");
+    var first = console.c.tree("first");
+    assertEquals(List.of("id", "id"), options(first).subList(0, 2));
+    var list = first.substring(first.indexOf("#completions"));
+    assertTrue(list.contains("text \"orders\"") && list.contains("text \"customers\""), list);
+    assertTrue(first.contains("In table public.orders"), first);
+    var second = console.c.tree("second");
+    assertTrue(second.contains("In table public.customers"), second);
+  }
+
+  @Test
+  void anAliasThatIsAnotherTablesNameNamesEachColumnByItsTable() throws Exception {
+    var app = console.console(SHOP);
+    var sql = "SELECT i FROM customers orders UNION ALL SELECT id FROM orders";
+    console.c.run(
+        app,
+        TREE + type(sql) + "key Home\n" + "key ArrowRight\n".repeat(8) + "type \"d\"\n" + READ
+            + "snap named\n");
+    var named = console.c.tree("named");
+    assertEquals(List.of("id", "id"), options(named).subList(0, 2));
+    var list = named.substring(named.indexOf("#completions"));
+    assertTrue(list.contains("text \"orders\"") && list.contains("text \"customers\""), list);
+  }
+
+  @Test
+  void aColumnOfATableJoinedToItselfIsListedForEachAlias() throws Exception {
+    var app = console.console(SHOP);
+    var sql = "SELECT i FROM orders parent JOIN orders child";
+    console.c.run(
+        app,
+        TREE + type(sql) + "key Home\n" + "key ArrowRight\n".repeat(8) + "type \"d\"\n" + READ
+            + "snap self\n");
+    var self = console.c.tree("self");
+    assertEquals(List.of("id", "id"), options(self).subList(0, 2));
+    var list = self.substring(self.indexOf("#completions"));
+    assertTrue(list.contains("text \"parent\"") && list.contains("text \"child\""), list);
+    // Two entries, so the documentation of the second is asked for anew.
+    console.c.run(app, "key ArrowDown\nframe\n" + DOCUMENTED + "snap child\n");
+    var child = console.c.tree("child");
+    assertTrue(
+        child.contains("option-1 role=option label=\"id\"") && child.contains("selected"), child);
+    assertTrue(child.contains("In table public.orders"), child);
   }
 
   /** A name that needs quotes is listed as it is and put in quoted. */
@@ -473,6 +624,123 @@ class ConsoleEditorTest {
             """);
     assertEquals(List.of("audit.events"), options(console.c.tree("events")));
     assertEquals("SELECT * FROM audit.events", console.tab(app).text);
+    // The name of two tables: the one the server finds says its schema.
+    console.c.run(app, """
+        key A control
+        type "SELECT * FROM o"
+        type "r"
+        frame
+        advance 1
+        frame
+        snap orders
+        """);
+    var orders = console.c.tree("orders");
+    assertEquals(List.of("orders", "audit.orders"), options(orders).subList(0, 2));
+    var list = orders.substring(orders.indexOf("#completions"));
+    assertTrue(list.contains("text \"public\""), list);
+    assertFalse(list.contains("text \"audit\""), "audit.orders says its schema already: " + list);
+  }
+
+  @Test
+  void aTableThatAnEarlierSchemaOnTheSearchPathShadowsIsInsertedWithItsSchema() throws Exception {
+    servers.serve(PATHS, Provider.POSTGRESQL, "16.4", """
+        shop
+          shop_app
+            orders
+              *id: integer
+          public
+            @orders
+              total: numeric
+        """);
+    var app = console.console(AUDITED);
+    console.c.run(
+        app,
+        open("audited") + SETTLE + type("SELECT * FROM o") + "type \"r\"\n" + READ
+            + "snap shadowed\n");
+    var shadowed = console.c.tree("shadowed");
+    assertEquals(List.of("orders", "public.orders"), options(shadowed).subList(0, 2));
+    // The bare name is the table the server takes for it, which its detail names.
+    var list = shadowed.substring(shadowed.indexOf("#completions"));
+    assertTrue(list.contains("text \"shop_app\""), list);
+    console.c.run(app, "key ArrowDown\nframe\nkey Enter\nframe\n");
+    assertEquals("SELECT * FROM public.orders", console.tab(app).text);
+  }
+
+  @Test
+  void aBareTableNameClaimsNoSchemaWhileAnEarlierOneOnTheSearchPathIsRead() throws Exception {
+    servers.serve(PATHS, Provider.POSTGRESQL, "16.4", """
+        shop
+          shop_app
+            orders
+              *id: integer
+          audit
+            orders
+              *id: integer
+          public
+            orders
+              *id: bigint
+        """);
+    var app = console.console(AUDITED);
+    // The tree read public and audit, not shop_app, which comes first on the search path.
+    console.c.run(
+        app,
+        open("audited")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("audit")
+            + SETTLE
+            + open("public")
+            + SETTLE);
+    var held = servers.hold("all tables " + PATHS + "/shop");
+    console.c.run(
+        app, type("SELECT * FROM o") + "type \"r\"\nframe\nadvance 1\nframe\nsnap unread\n");
+    var unread = console.c.tree("unread");
+    assertEquals(List.of("orders", "audit.orders"), options(unread).subList(0, 2));
+    var list = unread.substring(unread.indexOf("#completions"));
+    assertFalse(list.contains("text \"public\""), list);
+    held.countDown();
+    console.c.run(app, SETTLE + "frame\nsnap read\n");
+    var read = console.c.tree("read");
+    assertTrue(read.substring(read.indexOf("#completions")).contains("text \"shop_app\""), read);
+  }
+
+  @Test
+  @Disabled("The documentation of an unchanged entry is not asked again: rethinkj/ui#947")
+  void aBareTableNameIsDocumentedOnceAnEarlierSchemaOnTheSearchPathIsReadEmpty() throws Exception {
+    servers.serve(PATHS, Provider.POSTGRESQL, "16.4", """
+        shop
+          shop_app
+          public
+            orders
+              *id: bigint
+            zorro
+              *id: bigint
+        """);
+    var app = console.console(AUDITED);
+    // The tree read public and orders, whose documentation then changes by its target alone.
+    console.c.run(
+        app,
+        open("audited")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("public")
+            + SETTLE
+            + open("orders")
+            + SETTLE);
+    var held = servers.hold("all tables " + PATHS + "/shop");
+    console.c.run(
+        app,
+        type("SELECT * FROM o") + "type \"r\"\nframe\nadvance 1\nframe\n"
+            // Back on orders, the list asks for its documentation: none yet.
+            + "key ArrowDown\nframe\nkey ArrowUp\nframe\nadvance 1\nframe\n");
+    held.countDown();
+    // shop_app has no orders: the bare name is public's, documented without reopening the list.
+    console.c.run(app, SETTLE + DOCUMENTED + "snap read\n");
+    var read = console.c.tree("read");
+    assertEquals(List.of("orders", "zorro"), options(read));
+    assertTrue(read.contains("Table public.orders"), read);
   }
 
   @Test

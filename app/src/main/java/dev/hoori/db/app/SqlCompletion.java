@@ -14,9 +14,12 @@ import dev.hoori.db.core.sql.Names;
 import dev.hoori.db.core.sql.Ranking;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -66,10 +69,14 @@ record SqlCompletion() implements Suggestions.Strategy {
       }
       default -> any(known, provider, context, candidates);
     }
-    // A name of several tables or schemas is put in once for each kind of thing.
+    // A name of several tables or schemas is put in once for each kind of thing; a column's once
+    // for each table and each name the statement gives it, which its entry names.
     var once = new LinkedHashMap<String, Suggestions.Candidate>();
     for (var c : candidates) {
-      once.putIfAbsent(c.text() + "\0" + c.symbol(), c);
+      var of = c.target() instanceof Suggestions.Target.OfColumn(var column)
+          ? column.table() + "\0" + c.label()
+          : "";
+      once.putIfAbsent(c.text() + "\0" + c.symbol() + "\0" + of, c);
     }
     return List.copyOf(once.values());
   }
@@ -82,12 +89,45 @@ record SqlCompletion() implements Suggestions.Strategy {
     keywords(known, Keywords.offered(provider), candidates);
     schemas(known, candidates);
     tables(known, candidates);
+    var named = new LinkedHashMap<Context.Reference, Table>();
     for (var reference : context.tables()) {
       var table = known.table(reference.schema(), reference.name());
       if (table != null) {
-        columns(known, table, candidates);
+        named.put(reference, table);
       }
     }
+    named.forEach((reference, table) ->
+        columns(known, table, label(reference, table, named, known), candidates));
+  }
+
+  /**
+   * How the statement names the table, which tells apart a column name that two of its tables
+   * have: its alias where no other table is named so, by alias or name, as in another arm of a
+   * UNION; else its name,
+   * with its schema or database where another table of the statement has that name.
+   */
+  private static String label(
+      Context.Reference reference,
+      Table table,
+      Map<Context.Reference, Table> named,
+      Suggestions.Known known) {
+    var alias = reference.alias();
+    if (alias != null
+        && named.entrySet().stream()
+            .noneMatch(other -> !other.getValue().equals(table)
+                && known.same(
+                    other.getKey().alias() != null
+                        ? other.getKey().alias()
+                        : other.getKey().name(),
+                    alias))) {
+      return alias;
+    }
+    for (var other : named.values()) {
+      if (!other.equals(table) && known.same(other.name(), table.name())) {
+        return table.container().name() + "." + table.name();
+      }
+    }
+    return reference.name();
   }
 
   private record Side(Context.Reference ref, Table table, String qualifier) {
@@ -400,9 +440,9 @@ record SqlCompletion() implements Suggestions.Strategy {
   }
 
   /**
-   * The tables and views of its database: as they are on the search path, with their schema
-   * where they are not, so that the name inserted is one the server finds; those on the path
-   * first, so that a name that two schemas have is the one the server takes.
+   * The tables and views of its database: as they are where the search path finds them, with
+   * their schema where it does not or an earlier schema on it has the name, so that the name
+   * inserted is one the server takes for that table; those it finds first.
    */
   private static void tables(Suggestions.Known known, List<Suggestions.Candidate> into) {
     var provider = known.provider;
@@ -410,18 +450,27 @@ record SqlCompletion() implements Suggestions.Strategy {
     var qualified = new ArrayList<Suggestions.Candidate>();
     var tables = new ArrayList<>(known.tables());
     tables.sort(Comparator.comparingInt(table -> onPath(path, table)));
+    // The names the search path finds, as the server compares them, which shadow later ones.
+    var bare = new HashSet<String>();
+    var found = new HashMap<String, Boolean>(); // by schema: whether no unread one comes before
     for (var table : tables) {
-      if (!(table.container() instanceof Schema x) || path.contains(x.name())) {
+      if (!(table.container() instanceof Schema x)) {
         tables(known, List.of(table), into);
-      } else {
-        boolean view = table.kind() == Table.Kind.VIEW;
-        qualified.add(new Suggestions.Candidate(
+      } else if (path.contains(x.name()) && bare.add(known.key(table.name()))) {
+        // While an earlier schema on the path is not read, the server may take another table
+        // for the name: the entry claims none.
+        boolean sure = found.computeIfAbsent(x.name(), known::unshadowed);
+        into.add(candidate(
+            table,
             table.name(),
+            Names.quoted(table.name(), provider),
+            sure ? new Suggestions.Target.OfTable(table) : null));
+      } else {
+        qualified.add(candidate(
+            table,
             x.name() + "." + table.name(),
             Names.quoted(x.name(), provider) + "." + Names.quoted(table.name(), provider),
-            view ? Symbol.EYE : Symbol.TABLE,
-            view ? "view" : "table",
-            false));
+            new Suggestions.Target.OfTable(table)));
       }
     }
     into.addAll(qualified);
@@ -438,15 +487,37 @@ record SqlCompletion() implements Suggestions.Strategy {
   private static void tables(
       Suggestions.Known known, List<Table> tables, List<Suggestions.Candidate> into) {
     for (var table : tables) {
-      boolean view = table.kind() == Table.Kind.VIEW;
       into.add(candidate(
-          known, table.name(), view ? Symbol.EYE : Symbol.TABLE, view ? "view" : "table"));
+          table,
+          table.name(),
+          Names.quoted(table.name(), known.provider),
+          new Suggestions.Target.OfTable(table)));
     }
+  }
+
+  /** A table or view, as it is listed and put in, standing for the target, or null for none. */
+  private static Suggestions.Candidate candidate(
+      Table table, String shown, String text, Suggestions.Target target) {
+    boolean view = table.kind() == Table.Kind.VIEW;
+    return new Suggestions.Candidate(
+        table.name(),
+        shown,
+        text,
+        view ? Symbol.EYE : Symbol.TABLE,
+        view ? "view" : "table",
+        0,
+        target);
   }
 
   /** The table's columns, of the statement, with their types; read if need be. */
   private static void columns(
       Suggestions.Known known, Table table, List<Suggestions.Candidate> into) {
+    columns(known, table, null, into);
+  }
+
+  /** As above, of the table the statement names so ({@code label}), or null. */
+  private static void columns(
+      Suggestions.Known known, Table table, String label, List<Suggestions.Candidate> into) {
     for (var column : known.columns(table)) {
       var name = column.name();
       into.add(new Suggestions.Candidate(
@@ -455,7 +526,9 @@ record SqlCompletion() implements Suggestions.Strategy {
           Names.quoted(name, known.provider),
           Symbol.COLUMN_SINGLE,
           column.type(),
-          true));
+          1,
+          new Suggestions.Target.OfColumn(column),
+          label));
     }
   }
 

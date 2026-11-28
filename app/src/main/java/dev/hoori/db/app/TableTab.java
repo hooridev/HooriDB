@@ -1657,6 +1657,7 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     }
     if (!clause.completion.isOpen()) {
       clause.suggestions.forget();
+      clause.completion.loading(false);
     }
     return connected ? completing(s, app, profile.provider(), clause, field) : field;
   }
@@ -1676,18 +1677,17 @@ final class TableTab implements Tab, Guard.Guarded, ResultEdits.Host, ResultEdit
     clause.completion.openAfter(Language.of(provider).opensCompletion());
     var prefix = completionPrefix(provider, clause);
     var database = table.container().database().name();
-    El completing = Completion.complete(
-        app,
-        field,
-        clause.caret,
-        clause.completion,
-        word -> clause.suggestions.at(
-            s,
-            provider,
-            database,
-            prefix + clause.text,
-            prefix.length() + Math.min(clause.caret, clause.text.length()),
-            word));
+    El completing = Completion.complete(app, field, clause.caret, clause.completion, word -> {
+      var entries = clause.suggestions.at(
+          s,
+          provider,
+          database,
+          prefix + clause.text,
+          prefix.length() + Math.min(clause.caret, clause.text.length()),
+          word);
+      clause.completion.loading(clause.suggestions.loading(s));
+      return entries;
+    });
     return completing.onKeyFirst(k -> {
       if (k.name().equals("Space") && k.modifiers() == Key.CONTROL) {
         clause.suggestions.forget();
