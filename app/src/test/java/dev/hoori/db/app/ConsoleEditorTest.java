@@ -462,6 +462,20 @@ class ConsoleEditorTest {
   }
 
   @Test
+  void anAliasThatIsAnotherTablesNameNamesEachColumnByItsTable() throws Exception {
+    var app = console.console(SHOP);
+    var sql = "SELECT i FROM customers orders UNION ALL SELECT id FROM orders";
+    console.c.run(
+        app,
+        TREE + type(sql) + "key Home\n" + "key ArrowRight\n".repeat(8) + "type \"d\"\n" + READ
+            + "snap named\n");
+    var named = console.c.tree("named");
+    assertEquals(List.of("id", "id"), options(named).subList(0, 2));
+    var list = named.substring(named.indexOf("#completions"));
+    assertTrue(list.contains("text \"orders\"") && list.contains("text \"customers\""), list);
+  }
+
+  @Test
   void aColumnOfATableJoinedToItselfIsListedForEachAlias() throws Exception {
     var app = console.console(SHOP);
     var sql = "SELECT i FROM orders parent JOIN orders child";

@@ -102,7 +102,8 @@ record SqlCompletion() implements Suggestions.Strategy {
 
   /**
    * How the statement names the table, which tells apart a column name that two of its tables
-   * have: its alias where no other table has it, as in another arm of a UNION; else its name,
+   * have: its alias where no other table is named so, by alias or name, as in another arm of a
+   * UNION; else its name,
    * with its schema or database where another table of the statement has that name.
    */
   private static String label(
@@ -114,8 +115,11 @@ record SqlCompletion() implements Suggestions.Strategy {
     if (alias != null
         && named.entrySet().stream()
             .noneMatch(other -> !other.getValue().equals(table)
-                && other.getKey().alias() != null
-                && known.same(other.getKey().alias(), alias))) {
+                && known.same(
+                    other.getKey().alias() != null
+                        ? other.getKey().alias()
+                        : other.getKey().name(),
+                    alias))) {
       return alias;
     }
     for (var other : named.values()) {
