@@ -12,6 +12,7 @@ import dev.hoori.db.core.sql.Ranking;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -34,8 +35,8 @@ final class Suggestions {
 
   /**
    * A name it may suggest, as it is listed, and as it is put in, quoted where it needs to be; its
-   * ranking priority (higher ranks first within prefix or substring matches); and the table or
-   * column it stands for, or null.
+   * ranking priority (higher ranks first within prefix or substring matches); the table or column
+   * it stands for, or null; and for a column, how the statement names its table, or null.
    */
   record Candidate(
       String name,
@@ -44,13 +45,25 @@ final class Suggestions {
       Icon symbol,
       String kind,
       int priority,
-      Target target) {
+      Target target,
+      String label) {
+    Candidate(
+        String name,
+        String shown,
+        String text,
+        Icon symbol,
+        String kind,
+        int priority,
+        Target target) {
+      this(name, shown, text, symbol, kind, priority, target, null);
+    }
+
     Candidate(String name, String shown, String text, Icon symbol, String kind, int priority) {
-      this(name, shown, text, symbol, kind, priority, null);
+      this(name, shown, text, symbol, kind, priority, null, null);
     }
 
     Candidate(String name, String shown, String text, Icon symbol, String kind, boolean own) {
-      this(name, shown, text, symbol, kind, own ? 1 : 0, null);
+      this(name, shown, text, symbol, kind, own ? 1 : 0, null, null);
     }
   }
 
@@ -242,7 +255,9 @@ final class Suggestions {
             c.symbol(),
             c.kind(),
             c.text(),
-            c.target() != null && named.get(repeats(c)) > 1 ? whose(c.target()) : null,
+            c.target() == null || named.get(repeats(c)) < 2
+                ? null
+                : c.label() != null ? c.label() : whose(c.target()),
             -1,
             -1,
             List.of()))
@@ -305,6 +320,11 @@ final class Suggestions {
       named = !database.isEmpty() || connected == null ? database : connected.database();
       var profile = connection == null ? null : s.profile(connection);
       path = profile == null ? List.of("public") : List.of(profile.user(), "public");
+    }
+
+    /** A name as the server compares it, for a set of names. */
+    String key(String name) {
+      return exact ? name : name.toLowerCase(Locale.ROOT);
     }
 
     /** Whether two names are the same as the server compares them. */

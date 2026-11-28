@@ -433,15 +433,35 @@ class ConsoleEditorTest {
     var repeated = console.c.tree("repeated");
     assertEquals(List.of("id", "id"), options(repeated).subList(0, 2));
     var list = repeated.substring(repeated.indexOf("#completions"));
-    assertTrue(list.contains("\"orders\"") && list.contains("\"customers\""), list);
-    // Each its own documentation, and put in as the statement names its table.
+    // The alias names the table, and the documentation follows the highlight.
+    assertTrue(list.contains("text \"o\"") && list.contains("text \"c\""), list);
     console.c.run(
         app, DOCUMENTED + "snap first\nkey ArrowDown\nframe\n" + DOCUMENTED + "snap second\n");
     assertTrue(console.c.tree("first").contains("In table public.orders"), console.c.tree("first"));
     var second = console.c.tree("second");
     assertTrue(second.contains("In table public.customers"), second);
     console.c.run(app, "key Enter\nframe\n");
-    assertEquals("SELECT c.id FROM orders o JOIN customers c", console.tab(app).text);
+    assertEquals("SELECT id FROM orders o JOIN customers c", console.tab(app).text);
+  }
+
+  @Test
+  void aColumnOfATableJoinedToItselfIsListedForEachAlias() throws Exception {
+    var app = console.console(SHOP);
+    var sql = "SELECT i FROM orders parent JOIN orders child";
+    console.c.run(
+        app,
+        TREE + type(sql) + "key Home\n" + "key ArrowRight\n".repeat(8) + "type \"d\"\n" + READ
+            + "snap self\n");
+    var self = console.c.tree("self");
+    assertEquals(List.of("id", "id"), options(self).subList(0, 2));
+    var list = self.substring(self.indexOf("#completions"));
+    assertTrue(list.contains("text \"parent\"") && list.contains("text \"child\""), list);
+    // Two entries, so the documentation of the second is asked for anew.
+    console.c.run(app, "key ArrowDown\nframe\n" + DOCUMENTED + "snap child\n");
+    var child = console.c.tree("child");
+    assertTrue(
+        child.contains("option-1 role=option label=\"id\"") && child.contains("selected"), child);
+    assertTrue(child.contains("In table public.orders"), child);
   }
 
   /** A name that needs quotes is listed as it is and put in quoted. */
@@ -600,6 +620,45 @@ class ConsoleEditorTest {
     assertTrue(list.contains("text \"shop_app\""), list);
     console.c.run(app, "key ArrowDown\nframe\nkey Enter\nframe\n");
     assertEquals("SELECT * FROM public.orders", console.tab(app).text);
+  }
+
+  @Test
+  void aBareTableNameClaimsNoSchemaWhileAnEarlierOneOnTheSearchPathIsRead() throws Exception {
+    servers.serve(PATHS, Provider.POSTGRESQL, "16.4", """
+        shop
+          shop_app
+            orders
+              *id: integer
+          audit
+            orders
+              *id: integer
+          public
+            orders
+              *id: bigint
+        """);
+    var app = console.console(AUDITED);
+    // The tree read public and audit, not shop_app, which comes first on the search path.
+    console.c.run(
+        app,
+        open("audited")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("audit")
+            + SETTLE
+            + open("public")
+            + SETTLE);
+    var held = servers.hold("all tables " + PATHS + "/shop");
+    console.c.run(
+        app, type("SELECT * FROM o") + "type \"r\"\nframe\nadvance 1\nframe\nsnap unread\n");
+    var unread = console.c.tree("unread");
+    assertEquals(List.of("orders", "audit.orders"), options(unread).subList(0, 2));
+    var list = unread.substring(unread.indexOf("#completions"));
+    assertFalse(list.contains("text \"public\""), list);
+    held.countDown();
+    console.c.run(app, SETTLE + "frame\nsnap read\n");
+    var read = console.c.tree("read");
+    assertTrue(read.substring(read.indexOf("#completions")).contains("text \"shop_app\""), read);
   }
 
   @Test
