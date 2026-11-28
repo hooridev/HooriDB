@@ -267,7 +267,7 @@ class TestConnectionTest {
     server.gate.countDown();
     run(app, SETTLE + "snap end\n");
     String end = tree("end");
-    assertTrue(end.contains("role=note label=\"Connected to PostgreSQL 16.4\""), end);
+    assertTrue(end.contains("role=status label=\"Connected to PostgreSQL 16.4\""), end);
     assertFalse(line(end, "label=\"Test connection\"").contains("busy"), end);
     assertEquals(List.of(PASSWORD), server.passwords);
     noPasswordIn("busy", "end");
@@ -410,7 +410,7 @@ class TestConnectionTest {
     assertTrue(downloading.contains("\"0 B of " + FakeDrivers.SIZE + "\""), downloading);
     run(app, SETTLE + SETTLE + SETTLE + "snap end\n" + DriversTest.DRIVER + "snap driver\n");
     String end = tree("end");
-    assertTrue(end.contains("role=note label=\"Connected to PostgreSQL 16.4\""), end);
+    assertTrue(end.contains("role=status label=\"Connected to PostgreSQL 16.4\""), end);
     assertTrue(tree("driver").contains("\"PostgreSQL JDBC 42.7.14, downloaded\""), end);
     assertEquals(
         List.of(FakeDrivers.VERSION),
@@ -446,7 +446,7 @@ class TestConnectionTest {
         press role=button label="Try again"
         frame
         """ + SETTLE + SETTLE + SETTLE + "snap end\n");
-    assertTrue(tree("end").contains("role=note label=\"Connected to PostgreSQL 16.4\""));
+    assertTrue(tree("end").contains("role=status label=\"Connected to PostgreSQL 16.4\""));
   }
 
   @Test

@@ -317,9 +317,10 @@ final class Probe {
     return switch (done.result()) {
       case Tester.Reached(var server) ->
         Callout.callout(
-            Callout.Kind.SUCCESS,
-            "Connected to " + server.product() + " " + server.version(),
-            null);
+                Callout.Kind.SUCCESS,
+                "Connected to " + server.product() + " " + server.version(),
+                null)
+            .role("status"); // announced as it comes, where a note is not
       case Tester.Refused(var failure, var detail) ->
         Callout.callout(
             Callout.Kind.DANGER, Words.title(failure), detail.isEmpty() ? null : detail);

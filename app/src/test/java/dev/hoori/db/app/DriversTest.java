@@ -286,7 +286,7 @@ class DriversTest {
     assertTrue(
         line(asked, "role=note").contains("\"Download PostgreSQL JDBC " + OLD + "?\""), asked);
     String tested = tree("tested");
-    assertTrue(tested.contains("role=note label=\"Connected to PostgreSQL 16.4\""), tested);
+    assertTrue(tested.contains("role=status label=\"Connected to PostgreSQL 16.4\""), tested);
     assertTrue(tree("driver").contains("\"PostgreSQL JDBC " + OLD + ", downloaded\""), tested);
     assertEquals(List.of(OLD), store().downloaded(FakeDrivers.DRIVER));
     assertSame(app.state().drivers.loaded(FakeDrivers.DRIVER, OLD), server.drivers.getFirst());
@@ -989,7 +989,7 @@ class DriversTest {
         pick("Recommended") + "await\nframe\n" + CLOSE_DRIVER + TEST + SETTLE + SETTLE + SETTLE
             + "snap tested\n");
     String tested = tree("tested");
-    assertTrue(tested.contains("role=note label=\"Connected to PostgreSQL 16.4\""), tested);
+    assertTrue(tested.contains("role=status label=\"Connected to PostgreSQL 16.4\""), tested);
     assertFalse(tested.contains("Download PostgreSQL JDBC"), tested);
     assertSame(app.state().drivers.loaded(FakeDrivers.DRIVER, OLD), server.drivers.getFirst());
   }
@@ -1126,7 +1126,7 @@ class DriversTest {
     downloaded(OLD);
     repository.offline = true;
     var app = app();
-    var connected = "role=note label=\"Connected to PostgreSQL 16.4\"";
+    var connected = "role=status label=\"Connected to PostgreSQL 16.4\"";
     run(app, START + NEW_SHOP + TEST + SETTLE + SETTLE + "snap tested\n");
     assertTrue(tree("tested").contains(connected), tree("tested"));
     assertSame(app.state().drivers.loaded(FakeDrivers.DRIVER, OLD), server.drivers.getFirst());
