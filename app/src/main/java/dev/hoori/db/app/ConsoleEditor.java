@@ -253,9 +253,10 @@ final class ConsoleEditor {
           && entry.equals(highlighted)
           && !Objects.equals(target, highlightedTarget)) {
         // The same entry stands for another table now, as a schema before it on the search path
-        // was read: the kit asks for it anew in the next build (workaround for rethinkj/ui#947).
+        // was read: the kit asks for it anew in the next build (workaround for rethinkj/ui#947),
+        // which a posted task brings, since an invalidate during a build is dropped with it.
         completion.documentation(null, null);
-        app.invalidate();
+        app.post(app::invalidate);
       }
       highlighted = entry;
       highlightedTarget = target;
