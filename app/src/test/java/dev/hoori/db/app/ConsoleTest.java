@@ -151,10 +151,18 @@ class ConsoleTest {
     assertTrue(line(app.tree().dump(), "role=search").contains("Find"));
     // Totals 13.49, 113.49 and 213.49 are in rows 10, 90 and 170 of the first portion; the row
     // after it is not read, which find leaves out.
-    c.run(
-        app,
-        "key Escape\nframe\npress #cell-0-0\nkey F control\nframe\nadvance 1\nframe\n"
-            + "type \"13.49\"\nframe\nsnap found\n");
+    c.run(app, """
+        key Escape
+        frame
+        press #cell-0-0
+        key F control
+        frame
+        advance 1
+        frame
+        type "13.49"
+        frame
+        snap found
+        """);
     String found = c.tree("found");
     assertTrue(o.find.isOpen(), found);
     assertTrue(line(found, "#count").contains("\"1 of 3+\""), found);

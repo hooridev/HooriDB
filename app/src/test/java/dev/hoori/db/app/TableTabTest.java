@@ -224,10 +224,16 @@ class TableTabTest {
     int before = servers.calls.size();
     // Totals 13.49, 213.49, 313.49 and 413.49 are in rows 10, 170, 250 and 330 of the two pages
     // read (row 90's is NULL); 513.49 and on lie in rows not read, which find leaves out.
-    c.run(
-        app,
-        "press #cell-0-0\nkey F control\nframe\nadvance 1\nframe\ntype \"13.49\"\nframe\n"
-            + "snap found\n");
+    c.run(app, """
+        press #cell-0-0
+        key F control
+        frame
+        advance 1
+        frame
+        type "13.49"
+        frame
+        snap found
+        """);
     String found = c.tree("found");
     assertTrue(found.contains("role=search label=\"Find\""), found);
     assertTrue(line(found, "#count").contains("\"1 of 4+\""), found);
