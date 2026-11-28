@@ -235,10 +235,7 @@ final class ConsoleEditor {
       return entries;
     });
     if (documented) {
-      int at = completion.highlight();
-      var target = completion.isOpen() ? suggestions.target(at) : null;
-      described = target == null ? null : described(s, provider, suggestions.entry(at), target);
-      completion.documentation(DOCUMENTATION, described == null ? e -> null : described::of);
+      describeHighlighted(s, provider);
     }
     // Control+Space asks anew, with what was read since the list was made.
     return completing.onKeyFirst(k -> {
@@ -247,6 +244,14 @@ final class ConsoleEditor {
       }
       return false;
     });
+  }
+
+  /** Takes what the highlighted entry stands for, for its documentation beside the list. */
+  private void describeHighlighted(State s, Provider provider) {
+    int at = completion.highlight();
+    var target = completion.isOpen() ? suggestions.target(at) : null;
+    described = target == null ? null : described(s, provider, suggestions.entry(at), target);
+    completion.documentation(DOCUMENTATION, described == null ? e -> null : described::of);
   }
 
   /** The console closes: the reads for its completions and quick documentation are given up. */
