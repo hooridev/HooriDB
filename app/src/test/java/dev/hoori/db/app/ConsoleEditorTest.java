@@ -445,6 +445,23 @@ class ConsoleEditorTest {
   }
 
   @Test
+  void anAliasOfTwoTablesInAUnionNamesEachColumnByItsTable() throws Exception {
+    var app = console.console(SHOP);
+    var sql = "SELECT i FROM orders t UNION ALL SELECT id FROM customers t";
+    console.c.run(
+        app,
+        TREE + type(sql) + "key Home\n" + "key ArrowRight\n".repeat(8) + "type \"d\"\n" + READ
+            + DOCUMENTED + "snap first\nkey ArrowDown\nframe\n" + DOCUMENTED + "snap second\n");
+    var first = console.c.tree("first");
+    assertEquals(List.of("id", "id"), options(first).subList(0, 2));
+    var list = first.substring(first.indexOf("#completions"));
+    assertTrue(list.contains("text \"orders\"") && list.contains("text \"customers\""), list);
+    assertTrue(first.contains("In table public.orders"), first);
+    var second = console.c.tree("second");
+    assertTrue(second.contains("In table public.customers"), second);
+  }
+
+  @Test
   void aColumnOfATableJoinedToItselfIsListedForEachAlias() throws Exception {
     var app = console.console(SHOP);
     var sql = "SELECT i FROM orders parent JOIN orders child";
@@ -659,6 +676,43 @@ class ConsoleEditorTest {
     console.c.run(app, SETTLE + "frame\nsnap read\n");
     var read = console.c.tree("read");
     assertTrue(read.substring(read.indexOf("#completions")).contains("text \"shop_app\""), read);
+  }
+
+  @Test
+  void aBareTableNameIsDocumentedOnceAnEarlierSchemaOnTheSearchPathIsReadEmpty() throws Exception {
+    servers.serve(PATHS, Provider.POSTGRESQL, "16.4", """
+        shop
+          shop_app
+          public
+            orders
+              *id: bigint
+            zorro
+              *id: bigint
+        """);
+    var app = console.console(AUDITED);
+    // The tree read public and orders, whose documentation then changes by its target alone.
+    console.c.run(
+        app,
+        open("audited")
+            + SETTLE
+            + open("shop")
+            + SETTLE
+            + open("public")
+            + SETTLE
+            + open("orders")
+            + SETTLE);
+    var held = servers.hold("all tables " + PATHS + "/shop");
+    console.c.run(
+        app,
+        type("SELECT * FROM o") + "type \"r\"\nframe\nadvance 1\nframe\n"
+            // Back on orders, the list asks for its documentation: none yet.
+            + "key ArrowDown\nframe\nkey ArrowUp\nframe\nadvance 1\nframe\n");
+    held.countDown();
+    // shop_app has no orders: the bare name is public's, documented without reopening the list.
+    console.c.run(app, SETTLE + DOCUMENTED + "snap read\n");
+    var read = console.c.tree("read");
+    assertEquals(List.of("orders", "zorro"), options(read));
+    assertTrue(read.contains("Table public.orders"), read);
   }
 
   @Test

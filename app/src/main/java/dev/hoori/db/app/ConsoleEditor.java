@@ -29,6 +29,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * What a console's editor shows beyond the kit's: the place of the last run's error in its own
@@ -96,6 +97,9 @@ final class ConsoleEditor {
   private final Map<String, Table> navigable = new HashMap<>(); // targets handed to onOpen
   private final Completion.State completion = new Completion.State().openAfter(".");
   private Described described; // the highlighted completion's documentation, or null
+  // The highlighted entry of the last build and what it stood for, or null.
+  private Completion.Entry highlighted;
+  private Target highlightedTarget;
   final Suggestions suggestions;
 
   ConsoleEditor(ConsoleTab tab) {
@@ -224,6 +228,7 @@ final class ConsoleEditor {
     boolean documented = provider != null && language instanceof Language.Sql;
     if (!documented) {
       described = null;
+      highlighted = null;
       completion.documentation(null, null);
     } else if (described != null
         && !described.equals(described(s, provider, described.entry(), described.target()))) {
@@ -241,8 +246,19 @@ final class ConsoleEditor {
     });
     if (documented) {
       int at = completion.highlight();
-      var target = completion.isOpen() ? suggestions.target(at) : null;
-      described = target == null ? null : described(s, provider, suggestions.entry(at), target);
+      var entry = completion.isOpen() ? suggestions.entry(at) : null;
+      var target = entry == null ? null : suggestions.target(at);
+      described = target == null ? null : described(s, provider, entry, target);
+      if (entry != null
+          && entry.equals(highlighted)
+          && !Objects.equals(target, highlightedTarget)) {
+        // The same entry stands for another table now, as a schema before it on the search path
+        // was read: the kit asks for it anew in the next build (workaround for rethinkj/ui#947).
+        completion.documentation(null, null);
+        app.invalidate();
+      }
+      highlighted = entry;
+      highlightedTarget = target;
       completion.documentation(DOCUMENTATION, described == null ? e -> null : described::of);
     }
     // Control+Space asks anew, with what was read since the list was made.

@@ -70,13 +70,12 @@ record SqlCompletion() implements Suggestions.Strategy {
       default -> any(known, provider, context, candidates);
     }
     // A name of several tables or schemas is put in once for each kind of thing; a column's once
-    // for each table, which its entry names.
+    // for each table and each name the statement gives it, which its entry names.
     var once = new LinkedHashMap<String, Suggestions.Candidate>();
     for (var c : candidates) {
-      Object of = c.label() != null ? c.label() : "";
-      if (c.label() == null && c.target() instanceof Suggestions.Target.OfColumn(var column)) {
-        of = column.table();
-      }
+      var of = c.target() instanceof Suggestions.Target.OfColumn(var column)
+          ? column.table() + "\0" + c.label()
+          : "";
       once.putIfAbsent(c.text() + "\0" + c.symbol() + "\0" + of, c);
     }
     return List.copyOf(once.values());
@@ -103,21 +102,24 @@ record SqlCompletion() implements Suggestions.Strategy {
 
   /**
    * How the statement names the table, which tells apart a column name that two of its tables
-   * have: its alias, else its name, with its schema or database where another table of the
-   * statement has that name.
+   * have: its alias where no other table has it, as in another arm of a UNION; else its name,
+   * with its schema or database where another table of the statement has that name.
    */
   private static String label(
       Context.Reference reference,
       Table table,
       Map<Context.Reference, Table> named,
       Suggestions.Known known) {
-    if (reference.alias() != null) {
-      return reference.alias();
+    var alias = reference.alias();
+    if (alias != null
+        && named.entrySet().stream()
+            .noneMatch(other -> !other.getValue().equals(table)
+                && other.getKey().alias() != null
+                && known.same(other.getKey().alias(), alias))) {
+      return alias;
     }
-    for (var other : named.entrySet()) {
-      if (!other.getValue().equals(table)
-          && other.getKey().alias() == null
-          && known.same(other.getKey().name(), reference.name())) {
+    for (var other : named.values()) {
+      if (!other.equals(table) && known.same(other.name(), table.name())) {
         return table.container().name() + "." + table.name();
       }
     }
