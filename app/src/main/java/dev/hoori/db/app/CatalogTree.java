@@ -1553,7 +1553,9 @@ final class CatalogTree {
             Menu.item("Rename…", () -> s.askRenameFolder(n.id())).icon(Symbol.EDIT),
             moveTo(s, n),
             Menu.separator(),
-            Menu.item(DELETE, () -> s.askDeleteFolder(n.id())).icon(Symbol.DELETE));
+            Menu.item(DELETE, () -> s.askDeleteFolder(n.id()))
+                .icon(Symbol.DELETE)
+                .danger());
       }
       case Node.Query n -> {
         var q = s.query(n.id());
@@ -1567,7 +1569,9 @@ final class CatalogTree {
             Menu.item("Duplicate", () -> s.duplicateQuery(q)).icon(Symbol.COPY),
             moveTo(s, n),
             Menu.separator(),
-            Menu.item(DELETE, () -> s.askDeleteQuery(q.id())).icon(Symbol.DELETE));
+            Menu.item(DELETE, () -> s.askDeleteQuery(q.id()))
+                .icon(Symbol.DELETE)
+                .danger());
       }
       case Node.Connection n -> {
         var p = s.profile(n.id());
@@ -1587,7 +1591,9 @@ final class CatalogTree {
             Menu.item("Duplicate", () -> s.duplicate(p)).icon(Symbol.COPY),
             moveTo(s, n),
             Menu.separator(),
-            Menu.item(DELETE, () -> change(s, p, Then.DELETE)).icon(Symbol.DELETE));
+            Menu.item(DELETE, () -> change(s, p, Then.DELETE))
+                .icon(Symbol.DELETE)
+                .danger());
       }
       case Node.Problem n ->
         List.of(Menu.item(TRY_AGAIN, () -> retry(s, n.of())).icon(Symbol.ARROW_CLOCKWISE));

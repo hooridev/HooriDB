@@ -419,10 +419,11 @@ final class DocumentPresentation {
     return row()
         .gap(t.space().xs())
         .align(Style.Align.CENTER)
-        .child(pageButton(Symbol.ARROW_UP, "First page", p.back(), p.first()))
+        .child(pageButton(Symbol.CHEVRON_DOUBLE_UP, "First page", p.back(), p.first()))
         .child(pageButton(Symbol.CHEVRON_UP, "Previous page", p.back(), p.previous()))
         .child(pageButton(Symbol.CHEVRON_DOWN, "Next page", p.on(), p.next()))
-        .child(pageButton(Symbol.ARROW_DOWN, "Last page", p.on() && p.last() != null, p.last()))
+        .child(pageButton(
+            Symbol.CHEVRON_DOUBLE_DOWN, "Last page", p.on() && p.last() != null, p.last()))
         .key("paging");
   }
 

@@ -9,9 +9,7 @@ import com.rethinkj.ui.El;
 import com.rethinkj.ui.Style;
 import com.rethinkj.ui.Work;
 import com.rethinkj.ui.kit.Callout;
-import com.rethinkj.ui.kit.Icon;
 import com.rethinkj.ui.kit.Progress;
-import com.rethinkj.ui.kit.Symbol;
 import com.rethinkj.ui.kit.Theme;
 import dev.hoori.db.core.connect.ConnectionException;
 import dev.hoori.db.core.connection.ConnectionProfile;
@@ -312,22 +310,17 @@ final class Probe {
   }
 
   private El outcomeView() {
-    Theme t = Theme.CURRENT.get();
     var done = outcome();
     if (done == null) {
       return null;
     }
     return switch (done.result()) {
-      case Tester.Reached(var server) -> {
-        String text = "Connected to " + server.product() + " " + server.version();
-        yield row()
-            .gap(t.space().s())
-            .align(Style.Align.CENTER)
-            .role("status")
-            .label(text)
-            .child(Icon.icon(Symbol.CHECKMARK_CIRCLE, Icon.Variant.SUCCESS))
-            .child(label(text).wrapText());
-      }
+      case Tester.Reached(var server) ->
+        Callout.callout(
+                Callout.Kind.SUCCESS,
+                "Connected to " + server.product() + " " + server.version(),
+                null)
+            .role("status"); // announced as it comes, where a note is not
       case Tester.Refused(var failure, var detail) ->
         Callout.callout(
             Callout.Kind.DANGER, Words.title(failure), detail.isEmpty() ? null : detail);
