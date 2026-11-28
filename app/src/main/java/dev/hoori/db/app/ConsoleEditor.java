@@ -227,7 +227,8 @@ final class ConsoleEditor {
       completion.documentation(null, null);
     } else if (described != null
         && !described.equals(described(s, provider, described.entry(), described.target()))) {
-      completion.documentation(null, null); // what it read since: the kit asks for it anew
+      // What it read since: the kit asks for it anew (workaround for rethinkj/ui#947).
+      completion.documentation(null, null);
     }
     if (documented) {
       // Set before the list is built, which asks for the documentation of a new highlight.
