@@ -217,6 +217,30 @@ class TableTabTest {
   }
 
   @Test
+  void controlFFindsAValueInTheRowsReadAndReadsNoMore() throws Exception {
+    var app = shop();
+    servers.rows(ORDERS, 1000, OptionalLong.of(1000));
+    c.run(app, open("orders") + SETTLE + table("orders") + SETTLE);
+    int before = servers.calls.size();
+    // Totals 13.49, 213.49, 313.49 and 413.49 are in rows 10, 170, 250 and 330 of the two pages
+    // read (row 90's is NULL); 513.49 and on lie in rows not read, which find leaves out.
+    c.run(
+        app,
+        "press #cell-0-0\nkey F control\nframe\nadvance 1\nframe\ntype \"13.49\"\nframe\n"
+            + "snap found\n");
+    String found = c.tree("found");
+    assertTrue(found.contains("role=search label=\"Find\""), found);
+    assertTrue(line(found, "#count").contains("\"1 of 4+\""), found);
+    assertEquals(
+        List.of(10, 3), List.of(tab(app).selection.row(), tab(app).selection.column()));
+    c.run(app, "key Enter\nframe\nsnap next\n");
+    assertEquals(170, tab(app).selection.row());
+    assertTrue(line(c.tree("next"), "#count").contains("\"2 of 4+\""), c.tree("next"));
+    assertEquals(
+        List.of(), servers.calls.subList(before, servers.calls.size()), "find reads nothing");
+  }
+
+  @Test
   void twoTablesOfOneNameSayWhereTheyLive() throws Exception {
     var app = shop();
     c.run(

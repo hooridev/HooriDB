@@ -53,7 +53,9 @@ database, or to a new console where none is or Settings asks for a new one; tabs
 windows of their own. The columns of a table and of a console's result fit their
 first rows once, and a table's fit again where a refresh finds other columns. A moment, a timestamp
 with a time zone, shows and is copied in the computer's time zone, with the offset it has there.
-Shift+Enter in a grid, or the button in its
+Control+F in the grid of a table, a collection, a console's result or the statement log opens the
+kit's find bar, which finds a value in the rows read, without filtering them or reading more, and
+selects each match in turn. Shift+Enter in a grid, or the button in its
 status line, opens a panel beside it with the value of the current cell, which follows the
 selection: JSON (PostgreSQL's `json` and `jsonb`, MySQL's and MariaDB's `json`) formatted and
 colored, and with its first problem marked and shown after its line where it is not valid; a table reads a value cut short
