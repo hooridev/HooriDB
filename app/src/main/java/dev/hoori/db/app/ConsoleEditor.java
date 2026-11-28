@@ -29,7 +29,6 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 
 /**
  * What a console's editor shows beyond the kit's: the place of the last run's error in its own
@@ -97,9 +96,6 @@ final class ConsoleEditor {
   private final Map<String, Table> navigable = new HashMap<>(); // targets handed to onOpen
   private final Completion.State completion = new Completion.State().openAfter(".");
   private Described described; // the highlighted completion's documentation, or null
-  // The highlighted entry of the last build and what it stood for, or null.
-  private Completion.Entry highlighted;
-  private Target highlightedTarget;
   final Suggestions suggestions;
 
   ConsoleEditor(ConsoleTab tab) {
@@ -226,18 +222,12 @@ final class ConsoleEditor {
     }
     completion.openAfter(language.opensCompletion());
     boolean documented = provider != null && language instanceof Language.Sql;
-    if (!documented) {
-      described = null;
-      highlighted = null;
-      completion.documentation(null, null);
-    } else if (described != null
-        && !described.equals(described(s, provider, described.entry(), described.target()))) {
-      // What it read since: the kit asks for it anew (workaround for rethinkj/ui#947).
-      completion.documentation(null, null);
-    }
     if (documented) {
       // Set before the list is built, which asks for the documentation of a new highlight.
       completion.documentation(DOCUMENTATION, described == null ? e -> null : described::of);
+    } else {
+      described = null;
+      completion.documentation(null, null);
     }
     El completing = Completion.complete(app, editor, tab.editor.caret(), completion, word -> {
       var entries = suggestions.at(s, language, provider, word);
@@ -246,20 +236,8 @@ final class ConsoleEditor {
     });
     if (documented) {
       int at = completion.highlight();
-      var entry = completion.isOpen() ? suggestions.entry(at) : null;
-      var target = entry == null ? null : suggestions.target(at);
-      described = target == null ? null : described(s, provider, entry, target);
-      if (entry != null
-          && entry.equals(highlighted)
-          && !Objects.equals(target, highlightedTarget)) {
-        // The same entry stands for another table now, as a schema before it on the search path
-        // was read: the kit asks for it anew in the next build (workaround for rethinkj/ui#947),
-        // which a posted task brings, since an invalidate during a build is dropped with it.
-        completion.documentation(null, null);
-        app.post(app::invalidate);
-      }
-      highlighted = entry;
-      highlightedTarget = target;
+      var target = completion.isOpen() ? suggestions.target(at) : null;
+      described = target == null ? null : described(s, provider, suggestions.entry(at), target);
       completion.documentation(DOCUMENTATION, described == null ? e -> null : described::of);
     }
     // Control+Space asks anew, with what was read since the list was made.
@@ -310,7 +288,7 @@ final class ConsoleEditor {
 
   /**
    * What the documentation of the entry shows, as the tree has read it; reads what it lacks, as
-   * quick documentation does, for the kit to ask for anew.
+   * quick documentation does, for the next time it is highlighted.
    */
   private Described described(State s, Provider provider, Completion.Entry entry, Target target) {
     var known = suggestions.known(s, provider);
